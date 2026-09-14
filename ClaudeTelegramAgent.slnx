@@ -1,0 +1,9 @@
+<Solution>
+  <Project Path="ClaudeTelegramAgent.AppHost/ClaudeTelegramAgent.AppHost.csproj" />
+  <Project Path="ClaudeTelegramAgent.Application/ClaudeTelegramAgent.Application.csproj" />
+  <Project Path="ClaudeTelegramAgent.Domain/ClaudeTelegramAgent.Domain.csproj" />
+  <Project Path="ClaudeTelegramAgent.Infrastructure/ClaudeTelegramAgent.Infrastructure.csproj" />
+  <Project Path="ClaudeTelegramAgent.RemindersMcpServer/ClaudeTelegramAgent.RemindersMcpServer.csproj" />
+  <Project Path="ClaudeTelegramAgent.ServiceDefaults/ClaudeTelegramAgent.ServiceDefaults.csproj" />
+  <Project Path="ClaudeTelegramAgent/ClaudeTelegramAgent.csproj" />
+</Solution>

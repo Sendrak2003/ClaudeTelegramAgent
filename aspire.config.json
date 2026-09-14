@@ -1,0 +1,5 @@
+{
+  "appHost": {
+    "path": "ClaudeTelegramAgent.AppHost/ClaudeTelegramAgent.AppHost.csproj"
+  }
+}

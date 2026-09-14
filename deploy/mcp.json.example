@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "reminders": {
+      "command": "C:\\path\\to\\ClaudeTelegramAgent\\publish\\reminders\\RemindersMcpServer.exe",
+      "args": [],
+      "env": {
+        "REMINDERS_DB": "C:\\path\\to\\CLAUDE_WORKDIR\\.agent-data\\reminders.db",
+        "AGENT_TIMEZONE": "Europe/Moscow",
+        "TELEGRAM_BOT_TOKEN": "тот же токен бота, что и Telegram:BotToken — нужен инструменту send_file"
+      }
+    },
+    "browser": {
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest"]
+    }
+  }
+}

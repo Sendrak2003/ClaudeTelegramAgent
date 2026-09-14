@@ -1,0 +1,29 @@
+## .NET
+bin/
+obj/
+publish/
+*.user
+
+## Secrets / local config
+.env
+appsettings.Local.json
+
+## Runtime data (reminders db, session store)
+.agent-data/
+
+## Рабочая папка агента (Claude:WorkDir) — .mcp.json с реальным токеном бота,
+## .claude/settings.local.json, сессии claude login и всё, что агент сам туда пишет.
+## Исключение: CLAUDE.md/AGENTS.md/скиллы — не секреты, версионируем их.
+workspace/*
+!workspace/CLAUDE.md
+!workspace/AGENTS.md
+!workspace/.claude/
+workspace/.claude/*
+!workspace/.claude/skills/
+
+## Visual Studio
+.vs/
+
+## OS
+Thumbs.db
+.DS_Store

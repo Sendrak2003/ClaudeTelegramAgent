@@ -1,0 +1,19 @@
+[Unit]
+Description=Claude Telegram Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Пользователь, от имени которого выполнен `claude login` и который владеет workspace.
+User=claudeagent
+WorkingDirectory=/opt/claude-telegram-agent/publish/host
+EnvironmentFile=/opt/claude-telegram-agent/.env
+ExecStart=/usr/bin/dotnet /opt/claude-telegram-agent/publish/host/ClaudeTelegramAgent.dll
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGINT
+SyslogIdentifier=claude-telegram-agent
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,19 @@
+services:
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    volumes:
+      # Рабочая папка агента: сюда claude CLI будет читать/писать файлы,
+      # здесь же появятся .agent-data/sessions.json и .agent-data/reminders.db.
+      - ./workspace:/workspace
+      # Домашняя папка контейнера — чтобы `claude login` (OAuth-сессия) переживал пересборки образа.
+      - claude-home:/root
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+volumes:
+  claude-home:

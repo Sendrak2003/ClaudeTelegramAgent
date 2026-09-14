@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "reminders": {
+      "command": "/app/reminders/RemindersMcpServer",
+      "args": [],
+      "env": {
+        "REMINDERS_DB": "/workspace/.agent-data/reminders.db",
+        "AGENT_TIMEZONE": "Europe/Moscow",
+        "TELEGRAM_BOT_TOKEN": "тот же токен бота, что и Telegram__BotToken в .env — нужен инструменту send_file"
+      }
+    },
+    "browser": {
+      "command": "playwright-mcp",
+      "args": ["--headless", "--no-sandbox"]
+    }
+  }
+}
