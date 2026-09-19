@@ -63,6 +63,7 @@ if (allowedUserIds.Count == 0)
 }
 
 var sessionsFilePath = Path.Combine(claudeWorkDir, ".agent-data", "sessions.json");
+var incomingFilesDirectory = Path.Combine(claudeWorkDir, ".agent-data", "incoming");
 
 builder.Services.AddSingleton(new AccessControlOptions(allowedUserIds));
 builder.Services.AddSingleton(new ReminderPollingOptions(reminderPollSeconds));
@@ -77,7 +78,7 @@ builder.Services.AddClaudeAgentClient(new ClaudeCliOptions(
 
 builder.Services.AddReminderPersistence(new SqliteReminderOptions(reminderDbPath));
 builder.Services.AddSessionStore(sessionsFilePath);
-builder.Services.AddTelegramMessaging(new TelegramOptions(telegramBotToken));
+builder.Services.AddTelegramMessaging(new TelegramOptions(telegramBotToken, incomingFilesDirectory));
 builder.Services.AddSystemClock(agentTimeZone);
 
 builder.Services.AddSingleton<AgentConversationService>();
