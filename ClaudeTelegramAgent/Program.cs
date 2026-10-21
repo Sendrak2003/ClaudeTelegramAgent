@@ -3,6 +3,7 @@ using ClaudeTelegramAgent.Hosting;
 using ClaudeTelegramAgent.Infrastructure;
 using ClaudeTelegramAgent.Infrastructure.Claude;
 using ClaudeTelegramAgent.Infrastructure.Reminders;
+using ClaudeTelegramAgent.Infrastructure.Speech;
 using ClaudeTelegramAgent.Infrastructure.Telegram;
 using ClaudeTelegramAgent.Options;
 
@@ -28,6 +29,12 @@ var claudeAuthMode = claudeAuthModeRaw.Equals("apikey", StringComparison.Ordinal
     ? ClaudeAuthMode.ApiKey
     : ClaudeAuthMode.Subscription;
 var claudeApiKey = configuration["Claude:ApiKey"];
+var claudeModelConfigured = configuration["Claude:Model"];
+var claudeModel = string.IsNullOrWhiteSpace(claudeModelConfigured) ? null : claudeModelConfigured.Trim();
+// Пустое или нулевое значение = без ограничения.
+int? claudeMaxTurns = int.TryParse(configuration["Claude:MaxTurns"], out var maxTurnsParsed) && maxTurnsParsed > 0
+    ? maxTurnsParsed
+    : null;
 
 var telegramBotToken = configuration["Telegram:BotToken"];
 if (string.IsNullOrWhiteSpace(telegramBotToken))
@@ -65,6 +72,21 @@ if (allowedUserIds.Count == 0)
 var sessionsFilePath = Path.Combine(claudeWorkDir, ".agent-data", "sessions.json");
 var incomingFilesDirectory = Path.Combine(claudeWorkDir, ".agent-data", "incoming");
 
+// Распознавание голосовых: Whisper через sherpa-onnx, модели лежат в .agent-data/models (вне git).
+// Всё переопределяется через конфиг Speech:*, значения по умолчанию подходят для локального запуска.
+var agentDataDir = Path.Combine(claudeWorkDir, ".agent-data");
+string SpeechSetting(string key, string fallback) =>
+    string.IsNullOrWhiteSpace(configuration[key]) ? fallback : configuration[key]!;
+
+var speechModelsDir = Path.Combine(agentDataDir, "models");
+var speechOptions = new SpeechOptions(
+    SpeechSetting("Speech:ModelDir", Path.Combine(speechModelsDir, "sherpa-onnx-whisper-turbo")),
+    SpeechSetting("Speech:VadModel", Path.Combine(speechModelsDir, "silero_vad.onnx")),
+    SpeechSetting("Speech:Ffmpeg", "ffmpeg"),
+    SpeechSetting("Speech:Language", "ru"),
+    configuration.GetValue("Speech:Threads", Math.Min(8, Environment.ProcessorCount)),
+    configuration.GetValue("Speech:TimeoutSeconds", 600));
+
 builder.Services.AddSingleton(new AccessControlOptions(allowedUserIds));
 builder.Services.AddSingleton(new ReminderPollingOptions(reminderPollSeconds));
 
@@ -74,11 +96,14 @@ builder.Services.AddClaudeAgentClient(new ClaudeCliOptions(
     claudePermissionMode,
     claudeTimeoutSeconds,
     claudeAuthMode,
-    claudeApiKey));
+    claudeApiKey,
+    claudeModel,
+    claudeMaxTurns));
 
 builder.Services.AddReminderPersistence(new SqliteReminderOptions(reminderDbPath));
 builder.Services.AddSessionStore(sessionsFilePath);
 builder.Services.AddTelegramMessaging(new TelegramOptions(telegramBotToken, incomingFilesDirectory));
+builder.Services.AddSpeechTranscription(speechOptions);
 builder.Services.AddSystemClock(agentTimeZone);
 
 builder.Services.AddSingleton<AgentConversationService>();

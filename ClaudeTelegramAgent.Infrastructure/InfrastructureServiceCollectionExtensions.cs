@@ -2,6 +2,7 @@ using ClaudeTelegramAgent.Application.Abstractions;
 using ClaudeTelegramAgent.Infrastructure.Claude;
 using ClaudeTelegramAgent.Infrastructure.Reminders;
 using ClaudeTelegramAgent.Infrastructure.Sessions;
+using ClaudeTelegramAgent.Infrastructure.Speech;
 using ClaudeTelegramAgent.Infrastructure.Telegram;
 using ClaudeTelegramAgent.Infrastructure.Time;
 using Microsoft.Extensions.DependencyInjection;
@@ -36,6 +37,13 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddSingleton<TelegramGateway>();
         services.AddSingleton<IMessageSender>(sp => sp.GetRequiredService<TelegramGateway>());
         services.AddSingleton<IIncomingMessageListener>(sp => sp.GetRequiredService<TelegramGateway>());
+        return services;
+    }
+
+    public static IServiceCollection AddSpeechTranscription(this IServiceCollection services, SpeechOptions options)
+    {
+        services.AddSingleton(options);
+        services.AddSingleton<ISpeechTranscriber>(new SherpaOnnxTranscriber(options));
         return services;
     }
 

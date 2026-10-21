@@ -60,7 +60,7 @@ public sealed class BotHostedService(
                 return;
         }
 
-        await conversation.HandleMessageAsync(message.ChatId, message.Text, ct);
+        await conversation.HandleMessageAsync(message.ChatId, message.Text, message.AudioPath, ct);
     }
 
     private async Task HandleListChatsAsync(ChatId chatId, CancellationToken ct)

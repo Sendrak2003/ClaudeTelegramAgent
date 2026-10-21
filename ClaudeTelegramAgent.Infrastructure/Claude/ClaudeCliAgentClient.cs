@@ -32,6 +32,20 @@ public sealed class ClaudeCliAgentClient(ClaudeCliOptions options) : IClaudeAgen
         startInfo.ArgumentList.Add("--output-format");
         startInfo.ArgumentList.Add("json");
 
+        if (!string.IsNullOrWhiteSpace(options.Model))
+        {
+            startInfo.ArgumentList.Add("--model");
+            startInfo.ArgumentList.Add(options.Model);
+        }
+
+        // Лимит агентных ходов (каждый вызов инструмента — ход) в одном запуске claude;
+        // защищает от затяжных циклов, которые быстро съедают лимиты подписки.
+        if (options.MaxTurns is > 0)
+        {
+            startInfo.ArgumentList.Add("--max-turns");
+            startInfo.ArgumentList.Add(options.MaxTurns.Value.ToString());
+        }
+
         if (!string.IsNullOrEmpty(sessionId))
         {
             startInfo.ArgumentList.Add("--resume");
@@ -95,10 +109,10 @@ public sealed class ClaudeCliAgentClient(ClaudeCliOptions options) : IClaudeAgen
         var stdoutText = stdout.ToString();
         var stderrText = stderr.ToString();
 
-        return ParseReply(stdoutText, stderrText, process.ExitCode, sessionId);
+        return ParseReply(stdoutText, stderrText, process.ExitCode, sessionId, options.MaxTurns);
     }
 
-    private static ClaudeAgentReply ParseReply(string stdoutText, string stderrText, int exitCode, string? previousSessionId)
+    private static ClaudeAgentReply ParseReply(string stdoutText, string stderrText, int exitCode, string? previousSessionId, int? maxTurns)
     {
         if (string.IsNullOrWhiteSpace(stdoutText))
         {
@@ -120,6 +134,14 @@ public sealed class ClaudeCliAgentClient(ClaudeCliOptions options) : IClaudeAgen
             {
                 return new ClaudeAgentReply(text, newSessionId, Success: exitCode == 0);
             }
+
+            // Ошибочные итоги (например, исчерпан лимит ходов) приходят JSON-ом без текста ответа:
+            // без этого пользователю улетел бы сырой JSON.
+            var errorReply = DescribeErrorResult(root, newSessionId, maxTurns);
+            if (errorReply is not null)
+            {
+                return errorReply;
+            }
         }
         catch (JsonException)
         {
@@ -129,6 +151,41 @@ public sealed class ClaudeCliAgentClient(ClaudeCliOptions options) : IClaudeAgen
 
         var fallback = string.IsNullOrWhiteSpace(stderrText) ? stdoutText.Trim() : stderrText.Trim();
         return new ClaudeAgentReply(fallback, previousSessionId, Success: false);
+    }
+
+    private static ClaudeAgentReply? DescribeErrorResult(JsonElement root, string? sessionId, int? maxTurns)
+    {
+        if (root.ValueKind != JsonValueKind.Object
+            || !root.TryGetProperty("subtype", out var subtypeElement)
+            || subtypeElement.ValueKind != JsonValueKind.String)
+        {
+            return null;
+        }
+
+        var subtype = subtypeElement.GetString();
+        if (subtype is null || !subtype.StartsWith("error", StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        // Сессия остаётся валидной: можно написать «продолжай» и агент подхватит с того же места.
+        if (subtype == "error_max_turns")
+        {
+            var limit = maxTurns is > 0 ? $" ({maxTurns})" : string.Empty;
+            return new ClaudeAgentReply(
+                $"Агент упёрся в лимит шагов{limit} и остановился, не закончив. Напиши «продолжай», и он продолжит с этого места.",
+                sessionId,
+                Success: false);
+        }
+
+        var details = root.TryGetProperty("errors", out var errors) && errors.ValueKind == JsonValueKind.Array
+            ? string.Join("; ", errors.EnumerateArray().Where(e => e.ValueKind == JsonValueKind.String).Select(e => e.GetString()))
+            : string.Empty;
+
+        return new ClaudeAgentReply(
+            $"Claude завершил запуск с ошибкой ({subtype}){(details.Length > 0 ? ": " + details : string.Empty)}.",
+            sessionId,
+            Success: false);
     }
 
     private static string? FindText(JsonElement root)
@@ -145,7 +202,12 @@ public sealed class ClaudeCliAgentClient(ClaudeCliOptions options) : IClaudeAgen
 
             if (root.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.Array)
             {
-                var builder = new StringBuilder();
+                // Content-массив может содержать несколько text-блоков вперемешку с tool_use —
+                // это шаги одного агентного хода (модель рассуждала вслух между вызовами
+                // инструментов), а не части одного ответа. Склеивать их все подряд без
+                // разделителя нельзя: получается слипшийся повторяющийся текст. Берём только
+                // последний text-блок — он самый свежий и самодостаточный.
+                string? lastText = null;
                 foreach (var block in content.EnumerateArray())
                 {
                     if (block.ValueKind == JsonValueKind.Object
@@ -155,13 +217,13 @@ public sealed class ClaudeCliAgentClient(ClaudeCliOptions options) : IClaudeAgen
                         && block.TryGetProperty("text", out var text)
                         && text.ValueKind == JsonValueKind.String)
                     {
-                        builder.Append(text.GetString());
+                        lastText = text.GetString();
                     }
                 }
 
-                if (builder.Length > 0)
+                if (lastText is not null)
                 {
-                    return builder.ToString();
+                    return lastText;
                 }
             }
 

@@ -93,11 +93,19 @@ public sealed class TelegramGateway : IMessageSender, IIncomingMessageListener
                 text = $"[Переслано от: {forwardLabel}]\n{text}";
             }
 
+            // Речь распознаётся в приложении (ISpeechTranscriber) до запуска claude,
+            // поэтому отдельно помечаем, какой из скачанных файлов — аудио.
+            var audioPath = filePath is not null
+                && (message.Voice is not null || message.Audio is not null || message.VideoNote is not null)
+                ? filePath
+                : null;
+
             var incoming = new IncomingMessage(
                 new ChatId(message.Chat.Id),
                 message.From?.Id ?? 0,
                 message.From?.Username,
-                text);
+                text,
+                audioPath);
 
             await _handler(incoming, ct);
         };

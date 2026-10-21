@@ -6,4 +6,6 @@ public sealed record ClaudeCliOptions(
     string PermissionMode,
     int TimeoutSeconds,
     ClaudeAuthMode Auth,
-    string? ApiKey);
+    string? ApiKey,
+    string? Model = null,
+    int? MaxTurns = null);
