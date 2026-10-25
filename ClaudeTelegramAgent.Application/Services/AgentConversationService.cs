@@ -38,7 +38,7 @@ public sealed class AgentConversationService(
                 live.CompleteRunning();
             }
 
-            live.StartStep("Думаю", "размышление");
+            live.StartStep("Думаю", null);
             var prompt = $"[Текущее время: {clock.NowLocal.ToString("yyyy-MM-ddTHH:mm:sszzz", CultureInfo.InvariantCulture)}]\n{text}";
             reply = await claude.SendAsync(chatId, prompt, sessionId, ct, live.OnProgress);
         }

@@ -17,7 +17,7 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
 {
     // Telegram терпит около одной правки в секунду на чат.
     private static readonly TimeSpan FirstFlushDelay = TimeSpan.FromMilliseconds(700);
-    private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(1.5);
+    private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(1);
     private const int MaxVisibleStages = 4;
     private const int MaxStreamedLength = 3800;
 
@@ -37,7 +37,7 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
         _loop = RunAsync(_loopCts.Token);
     }
 
-    public void StartStep(string headline, string stage)
+    public void StartStep(string headline, string? stage)
     {
         lock (_gate)
         {
@@ -187,11 +187,12 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
         }
 
         var running = _steps.LastOrDefault(s => !s.Done) ?? Step.Thinking();
-        var stages = _steps.Select(s => s.Done ? $"{s.Stage} ✓" : $"{s.Stage}…").ToList();
+        var stages = _steps.Where(s => s.Stage is not null).Select(s => s.Done ? $"{s.Stage} ✓" : $"{s.Stage}…").ToList();
         var shown = stages.Count > MaxVisibleStages ? stages.Skip(stages.Count - MaxVisibleStages).Prepend("…") : stages;
 
         var seconds = _total.Elapsed.TotalSeconds.ToString("0", CultureInfo.InvariantCulture);
-        return $"{running.Headline}\n{seconds}с · {string.Join(" · ", shown)}";
+        var details = stages.Count > 0 ? $"{seconds}с · {string.Join(" · ", shown)}" : $"{seconds}с";
+        return $"{running.Headline}\n{details}";
     }
 
     private void CompleteRunningUnsafe()
@@ -215,15 +216,15 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
         }
     }
 
-    private sealed class Step(string headline, string stage)
+    private sealed class Step(string headline, string? stage)
     {
         public string Headline { get; } = headline;
 
-        public string Stage { get; } = stage;
+        public string? Stage { get; } = stage;
 
         public bool Done { get; set; }
 
-        public static Step Thinking() => new("Думаю", "размышление");
+        public static Step Thinking() => new("Думаю", null);
 
         public static Step ForTool(string? name)
         {
