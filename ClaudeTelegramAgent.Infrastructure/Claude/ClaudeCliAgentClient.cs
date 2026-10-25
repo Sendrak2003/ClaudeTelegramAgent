@@ -7,11 +7,18 @@ using ClaudeTelegramAgent.Domain;
 
 namespace ClaudeTelegramAgent.Infrastructure.Claude;
 
-// ВАЖНО: формат `claude -p "..." --output-format json` нужно сверить вживую
-// (`claude -p "тест" --output-format json`) и поправить парсинг ниже при расхождении.
+// Запуск идёт в режиме `--output-format stream-json --verbose --include-partial-messages`: на каждой
+// строке stdout один JSON-объект. Из них ловим события для живого статуса (текст, инструменты),
+// а итоговая строка `"type":"result"` по формату совпадает с обычным `--output-format json`
+// и разбирается в ParseReply.
 public sealed class ClaudeCliAgentClient(ClaudeCliOptions options) : IClaudeAgentClient
 {
-    public async Task<ClaudeAgentReply> SendAsync(ChatId chatId, string prompt, string? sessionId, CancellationToken ct)
+    public async Task<ClaudeAgentReply> SendAsync(
+        ChatId chatId,
+        string prompt,
+        string? sessionId,
+        CancellationToken ct,
+        Action<AgentProgress>? onProgress = null)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -30,7 +37,9 @@ public sealed class ClaudeCliAgentClient(ClaudeCliOptions options) : IClaudeAgen
         startInfo.ArgumentList.Add("-p");
         startInfo.ArgumentList.Add(prompt);
         startInfo.ArgumentList.Add("--output-format");
-        startInfo.ArgumentList.Add("json");
+        startInfo.ArgumentList.Add("stream-json");
+        startInfo.ArgumentList.Add("--verbose");
+        startInfo.ArgumentList.Add("--include-partial-messages");
 
         if (!string.IsNullOrWhiteSpace(options.Model))
         {
@@ -77,8 +86,25 @@ public sealed class ClaudeCliAgentClient(ClaudeCliOptions options) : IClaudeAgen
 
         var stdout = new StringBuilder();
         var stderr = new StringBuilder();
+        string? resultLine = null;
 
-        process.OutputDataReceived += (_, e) => { if (e.Data is not null) stdout.AppendLine(e.Data); };
+        process.OutputDataReceived += (_, e) =>
+        {
+            if (e.Data is null)
+            {
+                return;
+            }
+
+            if (HandleStreamLine(e.Data, onProgress))
+            {
+                resultLine = e.Data;
+            }
+            else if (!e.Data.StartsWith('{'))
+            {
+                // Не JSON-событие (например, сообщение об ошибке запуска) — пригодится для текста ошибки.
+                stdout.AppendLine(e.Data);
+            }
+        };
         process.ErrorDataReceived += (_, e) => { if (e.Data is not null) stderr.AppendLine(e.Data); };
 
         process.Start();
@@ -106,11 +132,107 @@ public sealed class ClaudeCliAgentClient(ClaudeCliOptions options) : IClaudeAgen
             throw;
         }
 
-        var stdoutText = stdout.ToString();
+        var stdoutText = resultLine ?? stdout.ToString();
         var stderrText = stderr.ToString();
 
         return ParseReply(stdoutText, stderrText, process.ExitCode, sessionId, options.MaxTurns);
     }
+
+    // Возвращает true, если строка — итоговый результат запуска (type=result).
+    private static bool HandleStreamLine(string line, Action<AgentProgress>? onProgress)
+    {
+        if (!line.StartsWith('{'))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(line);
+            var root = document.RootElement;
+
+            if (root.ValueKind != JsonValueKind.Object || GetString(root, "type") is not { } type)
+            {
+                return false;
+            }
+
+            if (type == "result")
+            {
+                return true;
+            }
+
+            // События субагентов (parent_tool_use_id != null) не показываем: они не часть ответа.
+            if (onProgress is null
+                || (root.TryGetProperty("parent_tool_use_id", out var parent) && parent.ValueKind == JsonValueKind.String))
+            {
+                return false;
+            }
+
+            switch (type)
+            {
+                case "stream_event" when root.TryGetProperty("event", out var streamEvent):
+                    HandleStreamEvent(streamEvent, onProgress);
+                    break;
+
+                case "user" when ContainsToolResult(root):
+                    onProgress(new AgentProgress(AgentProgressKind.ToolFinished));
+                    break;
+            }
+        }
+        catch (JsonException)
+        {
+            // Битая строка потока не должна ронять запуск — итог всё равно придёт в result.
+        }
+
+        return false;
+    }
+
+    private static void HandleStreamEvent(JsonElement streamEvent, Action<AgentProgress> onProgress)
+    {
+        switch (GetString(streamEvent, "type"))
+        {
+            case "content_block_start" when streamEvent.TryGetProperty("content_block", out var block):
+                switch (GetString(block, "type"))
+                {
+                    case "text":
+                        onProgress(new AgentProgress(AgentProgressKind.TextStarted));
+                        break;
+                    case "tool_use":
+                        onProgress(new AgentProgress(AgentProgressKind.ToolStarted, GetString(block, "name")));
+                        break;
+                    case "thinking":
+                        onProgress(new AgentProgress(AgentProgressKind.Thinking));
+                        break;
+                }
+
+                break;
+
+            case "content_block_delta" when streamEvent.TryGetProperty("delta", out var delta)
+                                             && GetString(delta, "type") == "text_delta"
+                                             && GetString(delta, "text") is { Length: > 0 } text:
+                onProgress(new AgentProgress(AgentProgressKind.TextDelta, text));
+                break;
+        }
+    }
+
+    private static bool ContainsToolResult(JsonElement root)
+    {
+        if (!root.TryGetProperty("message", out var message)
+            || !message.TryGetProperty("content", out var content)
+            || content.ValueKind != JsonValueKind.Array)
+        {
+            return false;
+        }
+
+        return content.EnumerateArray().Any(block => GetString(block, "type") == "tool_result");
+    }
+
+    private static string? GetString(JsonElement element, string property) =>
+        element.ValueKind == JsonValueKind.Object
+        && element.TryGetProperty(property, out var value)
+        && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
 
     private static ClaudeAgentReply ParseReply(string stdoutText, string stderrText, int exitCode, string? previousSessionId, int? maxTurns)
     {

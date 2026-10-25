@@ -140,6 +140,66 @@ public sealed class TelegramGateway : IMessageSender, IIncomingMessageListener
         }
     }
 
+    public async Task<int> SendDraftAsync(ChatId chatId, string text, CancellationToken ct)
+    {
+        var message = await _bot.SendMessage(chatId.Value, TrimForTelegram(text), cancellationToken: ct);
+        return message.Id;
+    }
+
+    public async Task EditDraftAsync(ChatId chatId, int messageId, string text, CancellationToken ct)
+    {
+        try
+        {
+            await _bot.EditMessageText(chatId.Value, messageId, TrimForTelegram(text), cancellationToken: ct);
+        }
+        catch (ApiRequestException ex)
+        {
+            // «Не изменено» и лимит запросов при частых правках — норма для живого статуса:
+            // следующая правка всё равно придёт через пару секунд.
+            _logger.LogDebug(ex, "Draft edit skipped for chat {ChatId}", chatId);
+        }
+    }
+
+    public async Task FinalizeDraftAsync(ChatId chatId, int messageId, string text, CancellationToken ct)
+    {
+        var chunks = SplitIntoChunks(string.IsNullOrWhiteSpace(text) ? "(пустой ответ)" : text, MaxMessageLength).ToList();
+
+        try
+        {
+            await _bot.EditMessageText(
+                chatId.Value,
+                messageId,
+                ConvertMarkdownToTelegramHtml(chunks[0]),
+                parseMode: ParseMode.Html,
+                cancellationToken: ct);
+        }
+        catch (ApiRequestException ex) when (ex.Message.Contains("not modified", StringComparison.OrdinalIgnoreCase))
+        {
+            // Черновик уже содержит этот текст — править нечего.
+        }
+        catch (ApiRequestException ex)
+        {
+            _logger.LogWarning(ex, "Final HTML edit failed for chat {ChatId}, falling back to plain text", chatId);
+            try
+            {
+                await _bot.EditMessageText(chatId.Value, messageId, chunks[0], cancellationToken: ct);
+            }
+            catch (ApiRequestException)
+            {
+                // Совсем не вышло править — отправим ответ новым сообщением, чтобы он точно дошёл.
+                await SendAsync(chatId, chunks[0], ct);
+            }
+        }
+
+        foreach (var chunk in chunks.Skip(1))
+        {
+            await SendAsync(chatId, chunk, ct);
+        }
+    }
+
+    private static string TrimForTelegram(string text) =>
+        text.Length <= MaxMessageLength ? text : text[..MaxMessageLength];
+
     public async Task SendTypingAsync(ChatId chatId, CancellationToken ct)
     {
         try

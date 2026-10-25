@@ -24,16 +24,28 @@ public sealed class AgentConversationService(
         using var typingCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var typingLoop = KeepTypingAsync(chatId, typingCts.Token);
 
+        // Статус с этапами и ответ, растущий по мере генерации (см. LiveReplyPresenter).
+        var live = new LiveReplyPresenter(messageSender, chatId, logger);
+        live.Start(ct);
+
         ClaudeAgentReply reply;
         try
         {
             if (audioPath is not null)
             {
+                live.StartStep("Расшифровываю аудио");
                 text = await AppendTranscriptAsync(text, audioPath, ct);
+                live.CompleteRunning();
             }
 
+            live.StartStep("Думаю");
             var prompt = $"[Текущее время: {clock.NowLocal.ToString("yyyy-MM-ddTHH:mm:sszzz", CultureInfo.InvariantCulture)}]\n{text}";
-            reply = await claude.SendAsync(chatId, prompt, sessionId, ct);
+            reply = await claude.SendAsync(chatId, prompt, sessionId, ct, live.OnProgress);
+        }
+        catch (Exception ex)
+        {
+            await live.FailAsync(ex is OperationCanceledException ? "Остановлено" : "Не удалось получить ответ");
+            throw;
         }
         finally
         {
@@ -46,7 +58,7 @@ public sealed class AgentConversationService(
             sessions.SetActiveSessionId(chatId, reply.SessionId);
         }
 
-        await messageSender.SendAsync(chatId, reply.Text, ct);
+        await live.FinishAsync(reply.Text, reply.Success, ct);
     }
 
     // Сбой распознавания не должен терять сообщение: модель всё равно получает промпт

@@ -22,7 +22,7 @@ RUN dotnet publish ClaudeTelegramAgent.RemindersMcpServer/ClaudeTelegramAgent.Re
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git curl gnupg ca-certificates \
+    && apt-get install -y --no-install-recommends git curl gnupg ca-certificates ffmpeg \
     && mkdir -p /etc/apt/keyrings \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
