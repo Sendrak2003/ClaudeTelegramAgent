@@ -9,18 +9,17 @@ using Microsoft.Extensions.Logging;
 namespace ClaudeTelegramAgent.Application.Services;
 
 /// <summary>
-/// Живое отображение работы агента в чате: сообщение-статус с этапами и таймерами
-/// («Расшифровываю аудио», «Думаю», вызовы инструментов) и сообщение с ответом,
-/// которое растёт по мере генерации. По завершении ответ заменяется итоговым текстом с форматированием.
+/// Одно сообщение, которое меняется на месте: пока агент работает, в нём идёт статус
+/// («Думаю» и строка с таймером и пройденными этапами), а как только пошёл текст ответа,
+/// статус заменяется растущим ответом. По завершении сообщение превращается в итоговый текст с форматированием.
 /// </summary>
 public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILogger logger)
 {
-    // Telegram терпит около одной правки в секунду на чат; статус и ответ правятся по очереди раз в интервал.
+    // Telegram терпит около одной правки в секунду на чат.
     private static readonly TimeSpan FirstFlushDelay = TimeSpan.FromMilliseconds(700);
-    private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(2);
-    private const int MaxVisibleSteps = 8;
+    private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(1.5);
+    private const int MaxVisibleStages = 4;
     private const int MaxStreamedLength = 3800;
-    private const string Cursor = " ▍";
 
     private readonly object _gate = new();
     private readonly List<Step> _steps = [];
@@ -29,10 +28,8 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
 
     private CancellationTokenSource? _loopCts;
     private Task _loop = Task.CompletedTask;
-    private int? _statusMessageId;
-    private int? _answerMessageId;
-    private string _lastStatus = string.Empty;
-    private string _lastAnswer = string.Empty;
+    private int? _messageId;
+    private string _lastText = string.Empty;
 
     public void Start(CancellationToken ct)
     {
@@ -40,12 +37,12 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
         _loop = RunAsync(_loopCts.Token);
     }
 
-    public void StartStep(string title)
+    public void StartStep(string headline, string stage)
     {
         lock (_gate)
         {
             CompleteRunningUnsafe();
-            _steps.Add(new Step(title));
+            _steps.Add(new Step(headline, stage));
         }
     }
 
@@ -67,19 +64,19 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
                 case AgentProgressKind.Thinking:
                     if (!_steps.Any(s => !s.Done))
                     {
-                        _steps.Add(new Step("Думаю"));
+                        _steps.Add(Step.Thinking());
                     }
 
                     break;
 
                 case AgentProgressKind.ToolStarted:
                     CompleteRunningUnsafe();
-                    _steps.Add(new Step(DescribeTool(progress.Text), isTool: true));
+                    _steps.Add(Step.ForTool(progress.Text));
                     break;
 
                 case AgentProgressKind.ToolFinished:
                     CompleteRunningUnsafe();
-                    _steps.Add(new Step("Думаю"));
+                    _steps.Add(Step.Thinking());
                     break;
 
                 case AgentProgressKind.TextStarted:
@@ -99,27 +96,9 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
     {
         await StopLoopAsync();
 
-        string? statusText = null;
-        lock (_gate)
+        if (_messageId is { } id)
         {
-            CompleteRunningUnsafe();
-            if (_statusMessageId is not null)
-            {
-                var seconds = _total.Elapsed.TotalSeconds.ToString("0", CultureInfo.InvariantCulture);
-                var steps = _steps.Count(s => s.IsTool);
-                var tools = steps > 0 ? $" · инструментов: {steps}" : string.Empty;
-                statusText = success ? $"✅ Готово · {seconds}с{tools}" : $"⚠️ Завершено с ошибкой · {seconds}с";
-            }
-        }
-
-        if (statusText is not null && _statusMessageId is { } statusId)
-        {
-            await SafeAsync(() => sender.EditDraftAsync(chatId, statusId, statusText, ct));
-        }
-
-        if (_answerMessageId is { } answerId)
-        {
-            await sender.FinalizeDraftAsync(chatId, answerId, finalText, ct);
+            await sender.FinalizeDraftAsync(chatId, id, finalText, ct);
         }
         else
         {
@@ -132,9 +111,9 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
     {
         await StopLoopAsync();
 
-        if (_statusMessageId is { } statusId)
+        if (_messageId is { } id)
         {
-            await SafeAsync(() => sender.EditDraftAsync(chatId, statusId, $"⚠️ {reason}", CancellationToken.None));
+            await SafeAsync(() => sender.EditDraftAsync(chatId, id, reason, CancellationToken.None));
         }
     }
 
@@ -158,41 +137,27 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
 
     private async Task FlushAsync(CancellationToken ct)
     {
-        string status;
-        string answer;
+        string text;
         lock (_gate)
         {
-            status = RenderStatusUnsafe();
-            answer = RenderAnswerUnsafe();
+            text = RenderUnsafe();
         }
 
-        if (status.Length > 0 && status != _lastStatus)
+        if (text.Length == 0 || text == _lastText)
         {
-            if (_statusMessageId is { } id)
-            {
-                await sender.EditDraftAsync(chatId, id, status, ct);
-            }
-            else
-            {
-                _statusMessageId = await sender.SendDraftAsync(chatId, status, ct);
-            }
-
-            _lastStatus = status;
+            return;
         }
 
-        if (answer.Length > 0 && answer != _lastAnswer)
+        if (_messageId is { } id)
         {
-            if (_answerMessageId is { } id)
-            {
-                await sender.EditDraftAsync(chatId, id, answer, ct);
-            }
-            else
-            {
-                _answerMessageId = await sender.SendDraftAsync(chatId, answer, ct);
-            }
-
-            _lastAnswer = answer;
+            await sender.EditDraftAsync(chatId, id, text, ct);
         }
+        else
+        {
+            _messageId = await sender.SendDraftAsync(chatId, text, ct);
+        }
+
+        _lastText = text;
     }
 
     private async Task StopLoopAsync()
@@ -208,45 +173,32 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
         _loopCts = null;
     }
 
-    private string RenderStatusUnsafe()
+    private string RenderUnsafe()
     {
+        var answer = _answer.ToString().TrimEnd();
+        if (answer.Length > 0)
+        {
+            return answer.Length > MaxStreamedLength ? "…" + answer[^MaxStreamedLength..] : answer;
+        }
+
         if (_steps.Count == 0)
         {
             return string.Empty;
         }
 
-        var visible = _steps.Count > MaxVisibleSteps ? _steps.Skip(_steps.Count - MaxVisibleSteps) : _steps;
-        var lines = new List<string>();
-        if (_steps.Count > MaxVisibleSteps)
-        {
-            lines.Add($"… ещё {_steps.Count - MaxVisibleSteps} шагов выше");
-        }
+        var running = _steps.LastOrDefault(s => !s.Done) ?? Step.Thinking();
+        var stages = _steps.Select(s => s.Done ? $"{s.Stage} ✓" : $"{s.Stage}…").ToList();
+        var shown = stages.Count > MaxVisibleStages ? stages.Skip(stages.Count - MaxVisibleStages).Prepend("…") : stages;
 
-        lines.AddRange(visible.Select(s => s.Render()));
-        return string.Join('\n', lines);
-    }
-
-    private string RenderAnswerUnsafe()
-    {
-        var text = _answer.ToString().TrimEnd();
-        if (text.Length == 0)
-        {
-            return string.Empty;
-        }
-
-        if (text.Length > MaxStreamedLength)
-        {
-            text = "…" + text[^MaxStreamedLength..];
-        }
-
-        return text + Cursor;
+        var seconds = _total.Elapsed.TotalSeconds.ToString("0", CultureInfo.InvariantCulture);
+        return $"{running.Headline}\n{seconds}с · {string.Join(" · ", shown)}";
     }
 
     private void CompleteRunningUnsafe()
     {
         foreach (var step in _steps.Where(s => !s.Done))
         {
-            step.Complete();
+            step.Done = true;
         }
     }
 
@@ -263,51 +215,39 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
         }
     }
 
-    private static string DescribeTool(string? name)
+    private sealed class Step(string headline, string stage)
     {
-        if (string.IsNullOrEmpty(name))
+        public string Headline { get; } = headline;
+
+        public string Stage { get; } = stage;
+
+        public bool Done { get; set; }
+
+        public static Step Thinking() => new("Думаю", "размышление");
+
+        public static Step ForTool(string? name)
         {
-            return "Инструмент";
-        }
-
-        if (name.StartsWith("mcp__", StringComparison.Ordinal))
-        {
-            var parts = name.Split("__");
-            return parts.Length >= 3 ? $"{parts[1]}: {parts[2]}" : name;
-        }
-
-        return name switch
-        {
-            "WebSearch" => "Поиск в интернете",
-            "WebFetch" => "Читаю страницу",
-            "Read" or "Glob" or "Grep" => "Смотрю файлы",
-            "Edit" or "Write" => "Пишу файл",
-            "Bash" => "Выполняю команду",
-            _ => name,
-        };
-    }
-
-    private sealed class Step(string title, bool isTool = false)
-    {
-        private readonly Stopwatch _watch = Stopwatch.StartNew();
-
-        public bool Done { get; private set; }
-
-        public bool IsTool { get; } = isTool;
-
-        public void Complete()
-        {
-            if (!Done)
+            if (string.IsNullOrEmpty(name))
             {
-                _watch.Stop();
-                Done = true;
+                return new Step("Использую инструмент", "инструмент");
             }
-        }
 
-        public string Render()
-        {
-            var seconds = _watch.Elapsed.TotalSeconds.ToString("0", CultureInfo.InvariantCulture);
-            return Done ? $"✓ {title} · {seconds}с" : $"⏳ {title}… {seconds}с";
+            if (name.StartsWith("mcp__", StringComparison.Ordinal))
+            {
+                var parts = name.Split("__");
+                var tool = parts.Length >= 3 ? parts[2] : name;
+                return new Step($"Использую {tool}", tool);
+            }
+
+            return name switch
+            {
+                "WebSearch" => new Step("Ищу в интернете", "поиск в интернете"),
+                "WebFetch" => new Step("Читаю страницу", "чтение страницы"),
+                "Read" or "Glob" or "Grep" => new Step("Смотрю файлы", "поиск по файлам"),
+                "Edit" or "Write" => new Step("Пишу файл", "запись файла"),
+                "Bash" => new Step("Выполняю команду", "выполнение команды"),
+                _ => new Step($"Использую {name}", name),
+            };
         }
     }
 }

@@ -33,18 +33,18 @@ public sealed class AgentConversationService(
         {
             if (audioPath is not null)
             {
-                live.StartStep("Расшифровываю аудио");
+                live.StartStep("Расшифровываю аудио", "расшифровка речи");
                 text = await AppendTranscriptAsync(text, audioPath, ct);
                 live.CompleteRunning();
             }
 
-            live.StartStep("Думаю");
+            live.StartStep("Думаю", "размышление");
             var prompt = $"[Текущее время: {clock.NowLocal.ToString("yyyy-MM-ddTHH:mm:sszzz", CultureInfo.InvariantCulture)}]\n{text}";
             reply = await claude.SendAsync(chatId, prompt, sessionId, ct, live.OnProgress);
         }
         catch (Exception ex)
         {
-            await live.FailAsync(ex is OperationCanceledException ? "Остановлено" : "Не удалось получить ответ");
+            await live.FailAsync(ex is OperationCanceledException ? "Остановлено." : "Не удалось получить ответ.");
             throw;
         }
         finally
