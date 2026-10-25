@@ -25,6 +25,7 @@ public sealed class TelegramGateway : IMessageSender, IIncomingMessageListener
     private readonly TelegramBotClient _bot;
     private readonly HttpClient _http = new();
     private readonly string _token;
+    private readonly bool _useCustomEmoji;
     private readonly ILogger<TelegramGateway> _logger;
     private readonly string _incomingFilesDirectory;
     private Func<IncomingMessage, CancellationToken, Task>? _handler;
@@ -33,6 +34,7 @@ public sealed class TelegramGateway : IMessageSender, IIncomingMessageListener
     {
         _bot = new TelegramBotClient(options.BotToken);
         _token = options.BotToken;
+        _useCustomEmoji = options.UseCustomEmoji;
         _logger = logger;
         _incomingFilesDirectory = options.IncomingFilesDirectory;
     }
@@ -143,17 +145,27 @@ public sealed class TelegramGateway : IMessageSender, IIncomingMessageListener
         }
     }
 
-    public async Task StreamDraftAsync(ChatId chatId, int draftId, string text, CancellationToken ct)
+    public async Task StreamDraftAsync(ChatId chatId, int draftId, string text, CancellationToken ct, string? iconEmojiId = null)
     {
         // sendMessageDraft пока вызываем напрямую: это метод Bot API, который стримит частичный ответ в личный чат.
         try
         {
-            using var content = new FormUrlEncodedContent(new Dictionary<string, string>
+            var fields = new Dictionary<string, string>
             {
                 ["chat_id"] = chatId.Value.ToString(),
                 ["draft_id"] = draftId.ToString(),
                 ["text"] = text.Length <= MaxMessageLength ? text : text[..MaxMessageLength],
-            });
+            };
+
+            if (_useCustomEmoji && iconEmojiId is not null)
+            {
+                // Анимированная иконка этапа: сущность custom_emoji покрывает первый символ (2 UTF-16 кодовые единицы).
+                // Символ-заглушка нужен на случай, если клиент не умеет показывать кастомные эмодзи.
+                fields["text"] = "💭 " + fields["text"];
+                fields["entities"] = $"[{{\"type\":\"custom_emoji\",\"offset\":0,\"length\":2,\"custom_emoji_id\":\"{iconEmojiId}\"}}]";
+            }
+
+            using var content = new FormUrlEncodedContent(fields);
 
             using var response = await _http.PostAsync($"https://api.telegram.org/bot{_token}/sendMessageDraft", content, ct);
             if (!response.IsSuccessStatusCode)

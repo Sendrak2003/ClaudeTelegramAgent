@@ -20,6 +20,11 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
     private const int MaxVisibleStages = 4;
     private const int MaxStreamedLength = 3800;
 
+    // Id анимированных кастомных эмодзи этапов; показываются только если включён Telegram:UseCustomEmoji.
+    private const string ThinkingIcon = "5456125285160226779";
+    private const string SearchIcon = "5537244684667060232";
+    private const string FilesIcon = "5537186088428240919";
+
     private readonly object _gate = new();
     private readonly List<Step> _steps = [];
     private readonly StringBuilder _answer = new();
@@ -41,7 +46,7 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
         lock (_gate)
         {
             CompleteRunningUnsafe();
-            _steps.Add(new Step(headline, stage));
+            _steps.Add(new Step(headline, stage, ThinkingIcon));
         }
     }
 
@@ -79,6 +84,15 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
                     break;
 
                 case AgentProgressKind.ToolFinished:
+                    if (progress.Text == "error")
+                    {
+                        // Инструмент завершился ошибкой: в строке этапов он получит ✗ вместо ✓.
+                        foreach (var step in _steps.Where(s => !s.Done && s.Stage is not null))
+                        {
+                            step.Failed = true;
+                        }
+                    }
+
                     CompleteRunningUnsafe();
                     _steps.Add(Step.Thinking());
                     break;
@@ -130,9 +144,10 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
     private async Task FlushAsync(CancellationToken ct)
     {
         string text;
+        string? icon;
         lock (_gate)
         {
-            text = RenderUnsafe();
+            (text, icon) = RenderUnsafe();
         }
 
         if (text.Length == 0 || text == _lastText)
@@ -140,7 +155,7 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
             return;
         }
 
-        await sender.StreamDraftAsync(chatId, _draftId, text, ct);
+        await sender.StreamDraftAsync(chatId, _draftId, text, ct, icon);
         _lastText = text;
     }
 
@@ -157,26 +172,26 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
         _loopCts = null;
     }
 
-    private string RenderUnsafe()
+    private (string Text, string? Icon) RenderUnsafe()
     {
         var answer = _answer.ToString().TrimEnd();
         if (answer.Length > 0)
         {
-            return answer.Length > MaxStreamedLength ? "…" + answer[^MaxStreamedLength..] : answer;
+            return (answer.Length > MaxStreamedLength ? "…" + answer[^MaxStreamedLength..] : answer, null);
         }
 
         if (_steps.Count == 0)
         {
-            return string.Empty;
+            return (string.Empty, null);
         }
 
         var running = _steps.LastOrDefault(s => !s.Done) ?? Step.Thinking();
-        var stages = _steps.Where(s => s.Stage is not null).Select(s => s.Done ? $"{s.Stage} ✓" : $"{s.Stage}…").ToList();
+        var stages = _steps.Where(s => s.Stage is not null).Select(s => s.Render()).ToList();
         var shown = stages.Count > MaxVisibleStages ? stages.Skip(stages.Count - MaxVisibleStages).Prepend("…") : stages;
 
         var seconds = _total.Elapsed.TotalSeconds.ToString("0", CultureInfo.InvariantCulture);
         var details = stages.Count > 0 ? $"{seconds}с · {string.Join(" · ", shown)}" : $"{seconds}с";
-        return $"{running.Headline}\n{details}";
+        return ($"{running.Headline}\n{details}", running.IconId);
     }
 
     private void CompleteRunningUnsafe()
@@ -200,40 +215,55 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
         }
     }
 
-    private sealed class Step(string headline, string? stage)
+    private sealed class Step(string headline, string? stage, string? iconId)
     {
         public string Headline { get; } = headline;
 
         public string? Stage { get; } = stage;
 
+        public string? IconId { get; } = iconId;
+
         public bool Done { get; set; }
 
-        public static Step Thinking() => new("Думаю", null);
+        public bool Failed { get; set; }
+
+        public string Render() => Done ? (Failed ? $"{Stage} ✗" : $"{Stage} ✓") : $"{Stage}…";
+
+        public static Step Thinking() => new("Думаю", null, ThinkingIcon);
 
         // null — служебный инструмент, в статусе его не показываем.
         public static Step? ForTool(string? name)
         {
             if (string.IsNullOrEmpty(name))
             {
-                return new Step("Использую инструмент", "инструмент");
+                return new Step("Использую инструмент", "инструмент", ThinkingIcon);
             }
 
             if (name.StartsWith("mcp__", StringComparison.Ordinal))
             {
                 var parts = name.Split("__");
                 var tool = parts.Length >= 3 ? parts[2] : name;
-                return new Step($"Использую {tool}", tool);
+                return tool switch
+                {
+                    "add_reminder" => new Step("Создаю напоминание", "создание напоминания", ThinkingIcon),
+                    "list_reminders" => new Step("Смотрю напоминания", "список напоминаний", ThinkingIcon),
+                    "cancel_reminder" => new Step("Отменяю напоминание", "отмена напоминания", ThinkingIcon),
+                    "send_file" => new Step("Отправляю файл", "отправка файла", FilesIcon),
+                    "browser_navigate" => new Step("Открываю страницу", "открытие страницы", SearchIcon),
+                    _ when tool.StartsWith("browser_", StringComparison.Ordinal) => new Step("Работаю в браузере", "браузер", SearchIcon),
+                    _ => new Step($"Использую {tool}", tool, ThinkingIcon),
+                };
             }
 
             return name switch
             {
                 "ToolSearch" or "Skill" or "TodoWrite" => null,
-                "WebSearch" => new Step("Ищу в интернете", "поиск в интернете"),
-                "WebFetch" => new Step("Читаю страницу", "чтение страницы"),
-                "Read" or "Glob" or "Grep" => new Step("Смотрю файлы", "поиск по файлам"),
-                "Edit" or "Write" => new Step("Пишу файл", "запись файла"),
-                "Bash" => new Step("Выполняю команду", "выполнение команды"),
-                _ => new Step($"Использую {name}", name),
+                "WebSearch" => new Step("Ищу в интернете", "поиск в интернете", SearchIcon),
+                "WebFetch" => new Step("Читаю страницу", "чтение страницы", SearchIcon),
+                "Read" or "Glob" or "Grep" => new Step("Смотрю файлы", "поиск по файлам", FilesIcon),
+                "Edit" or "Write" => new Step("Пишу файл", "запись файла", FilesIcon),
+                "Bash" => new Step("Выполняю команду", "выполнение команды", ThinkingIcon),
+                _ => new Step($"Использую {name}", name, ThinkingIcon),
             };
         }
     }

@@ -174,8 +174,8 @@ public sealed class ClaudeCliAgentClient(ClaudeCliOptions options) : IClaudeAgen
                     HandleStreamEvent(streamEvent, onProgress);
                     break;
 
-                case "user" when ContainsToolResult(root):
-                    onProgress(new AgentProgress(AgentProgressKind.ToolFinished));
+                case "user" when TryGetToolResult(root, out var failed):
+                    onProgress(new AgentProgress(AgentProgressKind.ToolFinished, failed ? "error" : null));
                     break;
             }
         }
@@ -215,8 +215,11 @@ public sealed class ClaudeCliAgentClient(ClaudeCliOptions options) : IClaudeAgen
         }
     }
 
-    private static bool ContainsToolResult(JsonElement root)
+    // true, если сообщение несёт результат инструмента; isError — хотя бы один из результатов завершился ошибкой.
+    private static bool TryGetToolResult(JsonElement root, out bool isError)
     {
+        isError = false;
+
         if (!root.TryGetProperty("message", out var message)
             || !message.TryGetProperty("content", out var content)
             || content.ValueKind != JsonValueKind.Array)
@@ -224,7 +227,22 @@ public sealed class ClaudeCliAgentClient(ClaudeCliOptions options) : IClaudeAgen
             return false;
         }
 
-        return content.EnumerateArray().Any(block => GetString(block, "type") == "tool_result");
+        var found = false;
+        foreach (var block in content.EnumerateArray())
+        {
+            if (GetString(block, "type") != "tool_result")
+            {
+                continue;
+            }
+
+            found = true;
+            if (block.TryGetProperty("is_error", out var error) && error.ValueKind == JsonValueKind.True)
+            {
+                isError = true;
+            }
+        }
+
+        return found;
     }
 
     private static string? GetString(JsonElement element, string property) =>

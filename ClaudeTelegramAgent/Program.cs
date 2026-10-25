@@ -102,7 +102,10 @@ builder.Services.AddClaudeAgentClient(new ClaudeCliOptions(
 
 builder.Services.AddReminderPersistence(new SqliteReminderOptions(reminderDbPath));
 builder.Services.AddSessionStore(sessionsFilePath);
-builder.Services.AddTelegramMessaging(new TelegramOptions(telegramBotToken, incomingFilesDirectory));
+builder.Services.AddTelegramMessaging(new TelegramOptions(
+    telegramBotToken,
+    incomingFilesDirectory,
+    configuration.GetValue("Telegram:UseCustomEmoji", false)));
 builder.Services.AddSpeechTranscription(speechOptions);
 builder.Services.AddSystemClock(agentTimeZone);
 

@@ -13,5 +13,6 @@ public interface IMessageSender
     /// Повторные вызовы с тем же <paramref name="draftId"/> обновляют один и тот же черновик; итоговое сообщение
     /// отправляется отдельно через <see cref="SendAsync"/>. Сбой (сеть, лимиты) не бросает исключение.
     /// </summary>
-    Task StreamDraftAsync(ChatId chatId, int draftId, string text, CancellationToken ct);
+    /// <param name="iconEmojiId">Id анимированного кастомного эмодзи перед текстом статуса; игнорируется, если отправка кастомных эмодзи выключена.</param>
+    Task StreamDraftAsync(ChatId chatId, int draftId, string text, CancellationToken ct, string? iconEmojiId = null);
 }
