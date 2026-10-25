@@ -8,12 +8,10 @@ public interface IMessageSender
 
     Task SendTypingAsync(ChatId chatId, CancellationToken ct);
 
-    /// <summary>Отправляет обычный текст без разметки и возвращает id сообщения — его потом правят через <see cref="EditDraftAsync"/>.</summary>
-    Task<int> SendDraftAsync(ChatId chatId, string text, CancellationToken ct);
-
-    /// <summary>Заменяет текст черновика. Сбои вроде лимита запросов или «не изменено» не бросают исключение.</summary>
-    Task EditDraftAsync(ChatId chatId, int messageId, string text, CancellationToken ct);
-
-    /// <summary>Превращает черновик в готовый ответ с форматированием; текст сверх лимита Telegram уходит следующими сообщениями.</summary>
-    Task FinalizeDraftAsync(ChatId chatId, int messageId, string text, CancellationToken ct);
+    /// <summary>
+    /// Показывает частичный текст как живой черновик (sendMessageDraft): Telegram плавно дорисовывает его по мере обновлений.
+    /// Повторные вызовы с тем же <paramref name="draftId"/> обновляют один и тот же черновик; итоговое сообщение
+    /// отправляется отдельно через <see cref="SendAsync"/>. Сбой (сеть, лимиты) не бросает исключение.
+    /// </summary>
+    Task StreamDraftAsync(ChatId chatId, int draftId, string text, CancellationToken ct);
 }

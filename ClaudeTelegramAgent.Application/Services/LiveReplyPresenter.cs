@@ -9,15 +9,14 @@ using Microsoft.Extensions.Logging;
 namespace ClaudeTelegramAgent.Application.Services;
 
 /// <summary>
-/// Одно сообщение, которое меняется на месте: пока агент работает, в нём идёт статус
-/// («Думаю» и строка с таймером и пройденными этапами), а как только пошёл текст ответа,
-/// статус заменяется растущим ответом. По завершении сообщение превращается в итоговый текст с форматированием.
+/// Живой черновик ответа: пока агент работает, Telegram показывает статус («Думаю» и строку с таймером
+/// и пройденными этапами), а как только пошёл текст ответа, статус заменяется растущим ответом.
+/// Итоговое сообщение с форматированием отправляется отдельно, когда ответ готов.
 /// </summary>
 public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILogger logger)
 {
-    // Telegram терпит около одной правки в секунду на чат.
-    private static readonly TimeSpan FirstFlushDelay = TimeSpan.FromMilliseconds(700);
-    private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan FirstFlushDelay = TimeSpan.FromMilliseconds(300);
+    private static readonly TimeSpan RefreshInterval = TimeSpan.FromMilliseconds(400);
     private const int MaxVisibleStages = 4;
     private const int MaxStreamedLength = 3800;
 
@@ -25,10 +24,10 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
     private readonly List<Step> _steps = [];
     private readonly StringBuilder _answer = new();
     private readonly Stopwatch _total = Stopwatch.StartNew();
+    private readonly int _draftId = Random.Shared.Next(1, int.MaxValue);
 
     private CancellationTokenSource? _loopCts;
     private Task _loop = Task.CompletedTask;
-    private int? _messageId;
     private string _lastText = string.Empty;
 
     public void Start(CancellationToken ct)
@@ -70,8 +69,13 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
                     break;
 
                 case AgentProgressKind.ToolStarted:
-                    CompleteRunningUnsafe();
-                    _steps.Add(Step.ForTool(progress.Text));
+                    // Служебные инструменты (подгрузка других инструментов и т.п.) пользователю не показываем.
+                    if (Step.ForTool(progress.Text) is { } toolStep)
+                    {
+                        CompleteRunningUnsafe();
+                        _steps.Add(toolStep);
+                    }
+
                     break;
 
                 case AgentProgressKind.ToolFinished:
@@ -92,29 +96,17 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
         }
     }
 
-    public async Task FinishAsync(string finalText, bool success, CancellationToken ct)
+    public async Task FinishAsync(string finalText, CancellationToken ct)
     {
         await StopLoopAsync();
-
-        if (_messageId is { } id)
-        {
-            await sender.FinalizeDraftAsync(chatId, id, finalText, ct);
-        }
-        else
-        {
-            await sender.SendAsync(chatId, finalText, ct);
-        }
+        await sender.SendAsync(chatId, finalText, ct);
     }
 
-    // Запуск упал или отменён: убираем «крутящийся» статус, чтобы он не висел вечно.
+    // Запуск упал или отменён: черновик со «статусом» нельзя оставлять висеть, поэтому шлём короткое сообщение.
     public async Task FailAsync(string reason)
     {
         await StopLoopAsync();
-
-        if (_messageId is { } id)
-        {
-            await SafeAsync(() => sender.EditDraftAsync(chatId, id, reason, CancellationToken.None));
-        }
+        await SafeAsync(() => sender.SendAsync(chatId, reason, CancellationToken.None));
     }
 
     private async Task RunAsync(CancellationToken ct)
@@ -148,15 +140,7 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
             return;
         }
 
-        if (_messageId is { } id)
-        {
-            await sender.EditDraftAsync(chatId, id, text, ct);
-        }
-        else
-        {
-            _messageId = await sender.SendDraftAsync(chatId, text, ct);
-        }
-
+        await sender.StreamDraftAsync(chatId, _draftId, text, ct);
         _lastText = text;
     }
 
@@ -226,7 +210,8 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
 
         public static Step Thinking() => new("Думаю", null);
 
-        public static Step ForTool(string? name)
+        // null — служебный инструмент, в статусе его не показываем.
+        public static Step? ForTool(string? name)
         {
             if (string.IsNullOrEmpty(name))
             {
@@ -242,6 +227,7 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
 
             return name switch
             {
+                "ToolSearch" or "Skill" or "TodoWrite" => null,
                 "WebSearch" => new Step("Ищу в интернете", "поиск в интернете"),
                 "WebFetch" => new Step("Читаю страницу", "чтение страницы"),
                 "Read" or "Glob" or "Grep" => new Step("Смотрю файлы", "поиск по файлам"),

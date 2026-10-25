@@ -58,7 +58,7 @@ public sealed class AgentConversationService(
             sessions.SetActiveSessionId(chatId, reply.SessionId);
         }
 
-        await live.FinishAsync(reply.Text, reply.Success, ct);
+        await live.FinishAsync(reply.Text, ct);
     }
 
     // Сбой распознавания не должен терять сообщение: модель всё равно получает промпт

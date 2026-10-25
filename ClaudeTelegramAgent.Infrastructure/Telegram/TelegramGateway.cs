@@ -23,6 +23,8 @@ public sealed class TelegramGateway : IMessageSender, IIncomingMessageListener
     private const int MaxMessageLength = 4000;
 
     private readonly TelegramBotClient _bot;
+    private readonly HttpClient _http = new();
+    private readonly string _token;
     private readonly ILogger<TelegramGateway> _logger;
     private readonly string _incomingFilesDirectory;
     private Func<IncomingMessage, CancellationToken, Task>? _handler;
@@ -30,6 +32,7 @@ public sealed class TelegramGateway : IMessageSender, IIncomingMessageListener
     public TelegramGateway(TelegramOptions options, ILogger<TelegramGateway> logger)
     {
         _bot = new TelegramBotClient(options.BotToken);
+        _token = options.BotToken;
         _logger = logger;
         _incomingFilesDirectory = options.IncomingFilesDirectory;
     }
@@ -140,66 +143,31 @@ public sealed class TelegramGateway : IMessageSender, IIncomingMessageListener
         }
     }
 
-    public async Task<int> SendDraftAsync(ChatId chatId, string text, CancellationToken ct)
+    public async Task StreamDraftAsync(ChatId chatId, int draftId, string text, CancellationToken ct)
     {
-        var message = await _bot.SendMessage(chatId.Value, TrimForTelegram(text), cancellationToken: ct);
-        return message.Id;
-    }
-
-    public async Task EditDraftAsync(ChatId chatId, int messageId, string text, CancellationToken ct)
-    {
+        // sendMessageDraft пока вызываем напрямую: это метод Bot API, который стримит частичный ответ в личный чат.
         try
         {
-            await _bot.EditMessageText(chatId.Value, messageId, TrimForTelegram(text), cancellationToken: ct);
-        }
-        catch (ApiRequestException ex)
-        {
-            // «Не изменено» и лимит запросов при частых правках — норма для живого статуса:
-            // следующая правка всё равно придёт через пару секунд.
-            _logger.LogDebug(ex, "Draft edit skipped for chat {ChatId}", chatId);
-        }
-    }
-
-    public async Task FinalizeDraftAsync(ChatId chatId, int messageId, string text, CancellationToken ct)
-    {
-        var chunks = SplitIntoChunks(string.IsNullOrWhiteSpace(text) ? "(пустой ответ)" : text, MaxMessageLength).ToList();
-
-        try
-        {
-            await _bot.EditMessageText(
-                chatId.Value,
-                messageId,
-                ConvertMarkdownToTelegramHtml(chunks[0]),
-                parseMode: ParseMode.Html,
-                cancellationToken: ct);
-        }
-        catch (ApiRequestException ex) when (ex.Message.Contains("not modified", StringComparison.OrdinalIgnoreCase))
-        {
-            // Черновик уже содержит этот текст — править нечего.
-        }
-        catch (ApiRequestException ex)
-        {
-            _logger.LogWarning(ex, "Final HTML edit failed for chat {ChatId}, falling back to plain text", chatId);
-            try
+            using var content = new FormUrlEncodedContent(new Dictionary<string, string>
             {
-                await _bot.EditMessageText(chatId.Value, messageId, chunks[0], cancellationToken: ct);
-            }
-            catch (ApiRequestException)
+                ["chat_id"] = chatId.Value.ToString(),
+                ["draft_id"] = draftId.ToString(),
+                ["text"] = text.Length <= MaxMessageLength ? text : text[..MaxMessageLength],
+            });
+
+            using var response = await _http.PostAsync($"https://api.telegram.org/bot{_token}/sendMessageDraft", content, ct);
+            if (!response.IsSuccessStatusCode)
             {
-                // Совсем не вышло править — отправим ответ новым сообщением, чтобы он точно дошёл.
-                await SendAsync(chatId, chunks[0], ct);
+                _logger.LogDebug("Draft update rejected for chat {ChatId}: {Status}", chatId, (int)response.StatusCode);
             }
         }
-
-        foreach (var chunk in chunks.Skip(1))
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            await SendAsync(chatId, chunk, ct);
+            // Живой вывод — приятное дополнение: без него итоговое сообщение всё равно дойдёт.
+            // В лог пишем только тип ошибки: текст исключения HTTP-клиента может содержать адрес с токеном.
+            _logger.LogDebug("Draft update failed for chat {ChatId}: {ErrorType}", chatId, ex.GetType().Name);
         }
     }
-
-    private static string TrimForTelegram(string text) =>
-        text.Length <= MaxMessageLength ? text : text[..MaxMessageLength];
-
     public async Task SendTypingAsync(ChatId chatId, CancellationToken ct)
     {
         try
