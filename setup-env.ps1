@@ -29,7 +29,8 @@ $mcp = @{
         }
         browser = @{
             command = 'playwright-mcp'
-            args    = @('--headless', '--no-sandbox', '--browser', 'chromium')
+            args    = @('--browser', 'chrome', '--no-sandbox', '--user-data-dir', '/root/chrome-profile')
+            env     = @{ DISPLAY = ':99' }
         }
     }
 } | ConvertTo-Json -Depth 6
