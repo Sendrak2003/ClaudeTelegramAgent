@@ -32,6 +32,13 @@ RUN apt-get update \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
+# Инструменты для файлов, которые присылает пользователь (docx, xlsx, pptx, pdf): читать, править, пересохранять.
+# Отдельный слой, чтобы не пересобирать тяжёлый слой с Chromium выше.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 python3-pip pandoc unzip zip poppler-utils \
+    && pip3 install --no-cache-dir --break-system-packages python-docx openpyxl python-pptx pypdf \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=build /app/host /app/host
 COPY --from=build /app/reminders /app/reminders
 
