@@ -13,6 +13,10 @@ services:
       - claude-home:/root
     ports:
       - "8080:8080"
+      # noVNC: экран Chrome агента. Только localhost сервера, снаружи недоступен.
+      - "127.0.0.1:6080:6080"
+    # Chrome падает на маленьком /dev/shm.
+    shm_size: "1gb"
     restart: unless-stopped
 
 volumes:

@@ -76,6 +76,28 @@ docker compose up -d
 Подробности переменных окружения — в [`.env.example`](.env.example), примеры
 MCP-конфига и systemd-юнита — в [`deploy/`](deploy/).
 
+#### Браузер агента и вход в аккаунты
+
+В образе стоит Google Chrome с виртуальным экраном. Профиль лежит в томе `claude-home`
+(`/root/chrome-profile`), поэтому логины в Telegram Web, hh.ru и т.д. переживают перезапуски.
+Войти нужно один раз вручную: откройте `http://localhost:6080/vnc.html` (порт опубликован только на localhost;
+на VPS через `ssh -L 6080:localhost:6080 user@host`), нажмите Connect и залогиньтесь в окне Chrome,
+пока агент его держит открытым (например, попросите бота «открой web.telegram.org»).
+
+Chrome в образе только для x86_64 (amd64).
+
+#### Перенос на другой сервер (Windows или Linux VPS)
+
+```bash
+# старая машина
+./migrate.sh export            # agent-backup.tar.gz: том claude-home (вход в Claude, логины Chrome), workspace, .env
+# новая машина: git clone, скопировать архив (scp), затем
+./migrate.sh import agent-backup.tar.gz
+```
+
+Архив содержит токен бота и сессии аккаунтов, передавайте его как пароль. Для чистой установки
+на Linux вместо `setup-env.ps1` есть `setup-env.sh`.
+
 ## Стек
 
 .NET 10, ASP.NET Core, .NET Aspire, Telegram.Bot, Dapper + SQLite,
