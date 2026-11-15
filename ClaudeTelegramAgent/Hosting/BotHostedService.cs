@@ -17,6 +17,21 @@ public sealed class BotHostedService(
     IWebAppLauncher webApp,
     ILogger<BotHostedService> logger) : BackgroundService
 {
+    private const string HelpText =
+        "Привет! Я ИИ-ассистент: отвечаю на вопросы, работаю с файлами и страницами, ставлю напоминания и могу озвучивать ответы.\n\n" +
+        "*Что умею*\n" +
+        "— писать и править тексты, объяснять, считать, сравнивать (в том числе таблицами)\n" +
+        "— искать в интернете и читать страницы\n" +
+        "— принимать голосовые, фото и файлы\n" +
+        "— напоминать о делах в нужное время\n\n" +
+        "*Команды*\n" +
+        "/new — новый чат, /chats — список, /switch N — переключиться\n" +
+        "/reset — сбросить контекст, /status — состояние\n" +
+        "/voice — голосовые ответы, /live — живая озвучка в плеере\n\n" +
+        "Просто напишите, что нужно, или выберите пример ниже.";
+
+    private static readonly string[] HelpButtons = ["Что ты умеешь на примерах", "Поставь напоминание", "Сравни два варианта таблицей"];
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         listener.OnMessageReceived(HandleMessageAsync);
@@ -54,7 +69,8 @@ public sealed class BotHostedService(
         switch (text)
         {
             case "/start":
-                await messageSender.SendAsync(message.ChatId, "Привет! Я на связи и готов помочь.", ct);
+            case "/help":
+                await messageSender.SendWithButtonsAsync(message.ChatId, HelpText, HelpButtons, ct);
                 return;
             case "/reset":
                 conversation.Reset(message.ChatId);

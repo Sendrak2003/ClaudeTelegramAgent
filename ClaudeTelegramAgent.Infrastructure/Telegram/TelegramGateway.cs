@@ -55,6 +55,7 @@ public sealed class TelegramGateway : IMessageSender, IIncomingMessageListener, 
         await _bot.SetMyCommands(
             [
                 new BotCommand("start", "Начать общение с ботом"),
+                new BotCommand("help", "Что умеет бот"),
                 new BotCommand("new", "Создать новый чат"),
                 new BotCommand("chats", "Список чатов"),
                 new BotCommand("switch", "Переключиться на чат: /switch N"),
