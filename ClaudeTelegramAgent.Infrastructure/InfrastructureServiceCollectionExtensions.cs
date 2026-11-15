@@ -27,7 +27,9 @@ public static class InfrastructureServiceCollectionExtensions
 
     public static IServiceCollection AddSessionStore(this IServiceCollection services, string sessionsFilePath)
     {
-        services.AddSingleton<ISessionStore>(new JsonFileSessionStore(sessionsFilePath));
+        var store = new JsonFileSessionStore(sessionsFilePath);
+        services.AddSingleton<ISessionStore>(store);
+        services.AddSingleton<IAddonSettings>(store);
         return services;
     }
 
@@ -37,6 +39,7 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddSingleton<TelegramGateway>();
         services.AddSingleton<IMessageSender>(sp => sp.GetRequiredService<TelegramGateway>());
         services.AddSingleton<IIncomingMessageListener>(sp => sp.GetRequiredService<TelegramGateway>());
+        services.AddSingleton<IWebAppLauncher>(sp => sp.GetRequiredService<TelegramGateway>());
         return services;
     }
 
@@ -44,6 +47,20 @@ public static class InfrastructureServiceCollectionExtensions
     {
         services.AddSingleton(options);
         services.AddSingleton<ISpeechTranscriber>(new SherpaOnnxTranscriber(options));
+        return services;
+    }
+
+    public static IServiceCollection AddSpeechSynthesis(
+        this IServiceCollection services, QwenTtsOptions options, string cacheDirectory, int maxCachedFiles)
+    {
+        services.AddSingleton(options);
+        services.AddSingleton<QwenTtsSynthesizer>();
+        services.AddSingleton<ISpeechStreamer>(sp => sp.GetRequiredService<QwenTtsSynthesizer>());
+        services.AddSingleton<ISpeechSynthesizer>(sp => new CachingSpeechSynthesizer(
+            sp.GetRequiredService<QwenTtsSynthesizer>(),
+            cacheDirectory,
+            $"{options.Speaker}|{options.Language}|{options.Temperature}",
+            maxCachedFiles));
         return services;
     }
 

@@ -9,7 +9,11 @@ using Telegram.Bot.Exceptions;
 using Telegram.Bot.Types.Enums;
 using BotCommand = Telegram.Bot.Types.BotCommand;
 using FileBase = Telegram.Bot.Types.FileBase;
+using InlineKeyboardButton = Telegram.Bot.Types.ReplyMarkups.InlineKeyboardButton;
+using InlineKeyboardMarkup = Telegram.Bot.Types.ReplyMarkups.InlineKeyboardMarkup;
+using InputFile = Telegram.Bot.Types.InputFile;
 using Message = Telegram.Bot.Types.Message;
+using WebAppInfo = Telegram.Bot.Types.WebAppInfo;
 using MessageOrigin = Telegram.Bot.Types.MessageOrigin;
 using MessageOriginChannel = Telegram.Bot.Types.MessageOriginChannel;
 using MessageOriginChat = Telegram.Bot.Types.MessageOriginChat;
@@ -18,7 +22,7 @@ using MessageOriginUser = Telegram.Bot.Types.MessageOriginUser;
 
 namespace ClaudeTelegramAgent.Infrastructure.Telegram;
 
-public sealed class TelegramGateway : IMessageSender, IIncomingMessageListener
+public sealed class TelegramGateway : IMessageSender, IIncomingMessageListener, IWebAppLauncher
 {
     private const int MaxMessageLength = 4000;
 
@@ -46,8 +50,6 @@ public sealed class TelegramGateway : IMessageSender, IIncomingMessageListener
         var me = await _bot.GetMe(ct);
         _logger.LogInformation("Connected to Telegram as @{Username}", me.Username);
 
-        // Регистрация команд включает у Telegram кнопку меню рядом с полем ввода —
-        // без этого вызова список команд нигде в интерфейсе не появляется.
         await _bot.SetMyCommands(
             [
                 new BotCommand("start", "Начать общение с ботом"),
@@ -56,13 +58,12 @@ public sealed class TelegramGateway : IMessageSender, IIncomingMessageListener
                 new BotCommand("switch", "Переключиться на чат: /switch N"),
                 new BotCommand("reset", "Сбросить контекст текущего чата"),
                 new BotCommand("status", "Статус агента"),
+                new BotCommand("live", "Живая озвучка: открыть плеер"),
             ],
             cancellationToken: ct);
 
         _bot.OnMessage += async (message, updateType) =>
         {
-            // Пересланные фото/видео/документы несут текст в Caption, а не в Text —
-            // без этого такие сообщения молча игнорировались.
             var text = message.Text ?? message.Caption;
 
             string? filePath = null;
@@ -98,8 +99,6 @@ public sealed class TelegramGateway : IMessageSender, IIncomingMessageListener
                 text = $"[Переслано от: {forwardLabel}]\n{text}";
             }
 
-            // Речь распознаётся в приложении (ISpeechTranscriber) до запуска claude,
-            // поэтому отдельно помечаем, какой из скачанных файлов — аудио.
             var audioPath = filePath is not null
                 && (message.Voice is not null || message.Audio is not null || message.VideoNote is not null)
                 ? filePath
@@ -128,17 +127,11 @@ public sealed class TelegramGateway : IMessageSender, IIncomingMessageListener
         {
             try
             {
-                // HTML, не Markdown/MarkdownV2: только так Telegram даёт блокам кода
-                // подсветку языка и кнопку "Copy" (```lang ... ``` → <pre><code class="language-lang">).
-                // Конвертируем сами — MarkdownV2 потребовал бы экранировать почти всю пунктуацию
-                // в произвольном тексте модели, что ненадёжно.
                 var html = ConvertMarkdownToTelegramHtml(chunk);
                 await _bot.SendMessage(chatId.Value, html, parseMode: ParseMode.Html, cancellationToken: ct);
             }
             catch (ApiRequestException ex) when (ex.Message.Contains("can't parse entities", StringComparison.OrdinalIgnoreCase))
             {
-                // Конвертер мог собрать некорректный HTML из кривой разметки модели —
-                // не теряем сообщение, шлём как есть без форматирования.
                 _logger.LogWarning(ex, "HTML parse failed for chat {ChatId}, falling back to plain text", chatId);
                 await _bot.SendMessage(chatId.Value, chunk, cancellationToken: ct);
             }
@@ -147,7 +140,6 @@ public sealed class TelegramGateway : IMessageSender, IIncomingMessageListener
 
     public async Task StreamDraftAsync(ChatId chatId, int draftId, string text, CancellationToken ct, string? iconEmojiId = null)
     {
-        // sendMessageDraft пока вызываем напрямую: это метод Bot API, который стримит частичный ответ в личный чат.
         try
         {
             var fields = new Dictionary<string, string>
@@ -159,8 +151,6 @@ public sealed class TelegramGateway : IMessageSender, IIncomingMessageListener
 
             if (_useCustomEmoji && iconEmojiId is not null)
             {
-                // Анимированная иконка этапа: сущность custom_emoji покрывает первый символ (2 UTF-16 кодовые единицы).
-                // Символ-заглушка нужен на случай, если клиент не умеет показывать кастомные эмодзи.
                 fields["text"] = "💭 " + fields["text"];
                 fields["entities"] = $"[{{\"type\":\"custom_emoji\",\"offset\":0,\"length\":2,\"custom_emoji_id\":\"{iconEmojiId}\"}}]";
             }
@@ -175,8 +165,6 @@ public sealed class TelegramGateway : IMessageSender, IIncomingMessageListener
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            // Живой вывод — приятное дополнение: без него итоговое сообщение всё равно дойдёт.
-            // В лог пишем только тип ошибки: текст исключения HTTP-клиента может содержать адрес с токеном.
             _logger.LogDebug("Draft update failed for chat {ChatId}: {ErrorType}", chatId, ex.GetType().Name);
         }
     }
@@ -192,6 +180,18 @@ public sealed class TelegramGateway : IMessageSender, IIncomingMessageListener
         }
     }
 
+    public async Task SendVoiceAsync(ChatId chatId, byte[] oggOpus, CancellationToken ct)
+    {
+        using var stream = new MemoryStream(oggOpus);
+        await _bot.SendVoice(chatId.Value, InputFile.FromStream(stream, "voice.ogg"), cancellationToken: ct);
+    }
+
+    public async Task SendWebAppButtonAsync(ChatId chatId, string text, string buttonText, string url, CancellationToken ct)
+    {
+        var keyboard = new InlineKeyboardMarkup(InlineKeyboardButton.WithWebApp(buttonText, new WebAppInfo(url)));
+        await _bot.SendMessage(chatId.Value, text, replyMarkup: keyboard, cancellationToken: ct);
+    }
+
     private async Task<string?> DownloadAttachmentAsync(Message message, CancellationToken ct)
     {
         FileBase? file;
@@ -199,7 +199,7 @@ public sealed class TelegramGateway : IMessageSender, IIncomingMessageListener
 
         if (message.Photo is { Length: > 0 } photoSizes)
         {
-            file = photoSizes[^1]; // последний элемент — самое большое разрешение
+            file = photoSizes[^1];
             extension = ".jpg";
         }
         else if (message.Document is { } document)
@@ -291,8 +291,6 @@ public sealed class TelegramGateway : IMessageSender, IIncomingMessageListener
 
     private static string ConvertInlineMarkdown(string text)
     {
-        // Прячем inline-код за плейсхолдерами, чтобы */_ внутри него не считались
-        // разметкой жирного/курсива на следующих шагах.
         var codeSpans = new List<string>();
         text = InlineCodeRegex.Replace(text, m =>
         {

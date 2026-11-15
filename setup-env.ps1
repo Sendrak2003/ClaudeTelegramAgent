@@ -29,7 +29,7 @@ $mcp = @{
         }
         browser = @{
             command = 'playwright-mcp'
-            args    = @('--browser', 'chrome', '--no-sandbox', '--user-data-dir', '/root/chrome-profile')
+            args    = @('--cdp-endpoint', 'http://127.0.0.1:9222')
             env     = @{ DISPLAY = ':99' }
         }
     }

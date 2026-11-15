@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Живая озвучка</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #ffffff);
+    --text: var(--tg-theme-text-color, #1c1c1e);
+    --hint: var(--tg-theme-hint-color, #6d6d72);
+    --card: var(--tg-theme-secondary-bg-color, #f2f2f7);
+    --accent: var(--tg-theme-button-color, #2481cc);
+    --accent-text: var(--tg-theme-button-text-color, #ffffff);
+    --ok: #2e9d57; --warn: #c98a00; --bad: #d6453d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: var(--tg-theme-bg-color, #17181a); --text: var(--tg-theme-text-color, #f2f2f3);
+            --hint: var(--tg-theme-hint-color, #9a9aa0); --card: var(--tg-theme-secondary-bg-color, #232427); }
+  }
+  .avatar { display: flex; justify-content: center; margin: 8px 0 4px; }
+  .avatar svg { width: min(62vw, 240px); height: auto; border-radius: 20px; background: var(--card); }
+  #head { transform-box: fill-box; transform-origin: 50% 90%; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--text);
+         font: 16px/1.4 -apple-system, system-ui, "Segoe UI", Roboto, sans-serif; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: var(--hint); font-size: 13px; margin-bottom: 6px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  button { border: 0; border-radius: 10px; padding: 11px 16px; font: inherit; font-weight: 600;
+           background: var(--accent); color: var(--accent-text); }
+  button.ghost { background: var(--card); color: var(--text); }
+  button:disabled { opacity: .5; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--hint); display: inline-block; margin-right: 6px; }
+  .dot.on { background: var(--ok); } .dot.err { background: var(--bad); }
+  .card { background: var(--card); border-radius: 12px; padding: 12px 14px; margin-top: 12px; }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--hint); margin: 0 0 8px; }
+  .kv { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; font-size: 15px; }
+  .kv span:first-child { color: var(--hint); }
+  .verdict { font-weight: 700; margin-top: 8px; }
+  .verdict.ok { color: var(--ok); } .verdict.warn { color: var(--warn); } .verdict.bad { color: var(--bad); }
+  .chunk { padding: 8px 0; border-top: 1px solid rgba(128,128,128,.2); }
+  .chunk:first-child { border-top: 0; }
+  .chunk.playing { color: var(--accent); }
+  .chunk .meta { color: var(--hint); font-size: 12px; margin-top: 2px; }
+  .chunk .meta b { color: var(--bad); }
+  textarea { width: 100%; min-height: 96px; border-radius: 10px; border: 1px solid rgba(128,128,128,.3);
+             padding: 10px; font: inherit; background: var(--bg); color: var(--text); resize: vertical; }
+  label { font-size: 13px; color: var(--hint); }
+  input[type=number] { width: 84px; padding: 8px; border-radius: 8px; border: 1px solid rgba(128,128,128,.3);
+                       background: var(--bg); color: var(--text); font: inherit; }
+</style>
+</head>
+<body>
+<h1>Живая озвучка</h1>
+<div class="sub"><span id="dot" class="dot"></span><span id="status">Подключаюсь…</span></div>
+<div class="sub" id="diag"></div>
+<div class="sub">Пока плеер открыт, голосовые в чат не отправляются: тот же голос звучит здесь, по мере генерации.</div>
+
+<div id="avatar" class="avatar">
+  <svg id="face" viewBox="0 0 240 280" aria-label="Аватар">
+    <defs>
+      <linearGradient id="skin" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fbdcc8"/><stop offset="1" stop-color="#f1c2a6"/></linearGradient>
+      <linearGradient id="hair" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5a3320"/><stop offset="1" stop-color="#3a1f12"/></linearGradient>
+    </defs>
+    <g id="head">
+      <path d="M38 150 C20 60 70 14 120 14 C170 14 220 60 202 150 L214 262 L26 262 Z" fill="url(#hair)"/>
+      <rect x="100" y="186" width="40" height="58" rx="14" fill="#efbb9d"/>
+      <path d="M52 252 C70 226 100 226 120 238 C140 226 170 226 188 252 L188 280 L52 280 Z" fill="#2f4a7a"/>
+      <ellipse cx="120" cy="124" rx="68" ry="82" fill="url(#skin)"/>
+      <path d="M52 112 C58 48 100 30 128 36 C160 40 184 64 188 112 C168 84 140 70 108 72 C84 74 64 90 52 112 Z" fill="url(#hair)"/>
+      <ellipse cx="88" cy="132" rx="18" ry="11" fill="#fff"/><ellipse cx="152" cy="132" rx="18" ry="11" fill="#fff"/>
+      <g id="eyeL"><circle id="irisL" cx="88" cy="132" r="8.5" fill="#4a3226"/><circle cx="88" cy="132" r="3.6" fill="#120a06"/><circle cx="91" cy="129" r="2" fill="#fff"/></g>
+      <g id="eyeR"><circle id="irisR" cx="152" cy="132" r="8.5" fill="#4a3226"/><circle cx="152" cy="132" r="3.6" fill="#120a06"/><circle cx="155" cy="129" r="2" fill="#fff"/></g>
+      <rect id="lidL" x="68" y="120" width="40" height="0" fill="#f6d0b8"/><rect id="lidR" x="132" y="120" width="40" height="0" fill="#f6d0b8"/>
+      <path d="M68 124 Q88 114 108 124" fill="none" stroke="#2a1810" stroke-width="3" stroke-linecap="round"/>
+      <path d="M132 124 Q152 114 172 124" fill="none" stroke="#2a1810" stroke-width="3" stroke-linecap="round"/>
+      <path id="browL" d="M66 108 Q88 98 110 108" fill="none" stroke="#3a1f12" stroke-width="4" stroke-linecap="round"/>
+      <path id="browR" d="M130 108 Q152 98 174 108" fill="none" stroke="#3a1f12" stroke-width="4" stroke-linecap="round"/>
+      <path d="M118 140 Q112 164 120 168 Q128 166 124 156" fill="none" stroke="#d99a7c" stroke-width="3" stroke-linecap="round"/>
+      <ellipse cx="68" cy="164" rx="14" ry="8" fill="#ee9c8c" opacity=".35"/><ellipse cx="172" cy="164" rx="14" ry="8" fill="#ee9c8c" opacity=".35"/>
+      <path id="mouthIn" d="M96 186 Q120 186 144 186 Q120 186 96 186 Z" fill="#6a2630"/>
+      <path id="mouthLip" d="M96 186 Q120 196 144 186" fill="none" stroke="#c2566a" stroke-width="5" stroke-linecap="round"/>
+    </g>
+  </svg>
+</div>
+
+<div class="row" style="margin-top:10px">
+  <button id="unlock">Включить звук</button>
+  <button id="stop" class="ghost" disabled>Остановить</button>
+</div>
+
+<div class="card">
+  <h2>Проверка без бота</h2>
+  <textarea id="text">Привет! Сейчас я проверю, как звучит живая озвучка. Первая фраза должна начаться почти сразу, а дальше речь идёт без пауз, пока я дописываю ответ. Если голос не успевает за текстом, между фразами появятся заметные паузы. Это и есть то, что мы измеряем.</textarea>
+  <div class="row" style="margin-top:8px">
+    <label>Печатает, симв./с <input id="cps" type="number" value="120" min="10" max="2000"></label>
+    <label>Думает, мс <input id="think" type="number" value="1500" min="0" max="30000" step="100"></label>
+    <label>Запас звука, с <input id="pre" type="number" value="0.5" min="0" max="5" step="0.1"></label>
+    <label><input id="smart" type="checkbox" checked> Умный запас</label>
+    <label>Этап в середине
+      <select id="tool"><option value="">нет</option><option>Ищу в интернете</option><option>Читаю страницу</option><option>Смотрю файлы</option></select>
+    </label>
+  </div>
+  <div class="row" style="margin-top:10px"><button id="sim" class="ghost">Проверить</button></div>
+</div>
+
+<div class="card">
+  <h2>Результат</h2>
+  <div id="metrics"><span style="color:var(--hint)">Пока ответов не было.</span></div>
+  <div id="verdict" class="verdict"></div>
+</div>
+
+<div class="card">
+  <h2>Фразы</h2>
+  <div id="chunks"><span style="color:var(--hint)">Появятся по мере готовности.</span></div>
+</div>
+
+<script>
+const tg = window.Telegram && window.Telegram.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+
+const params = new URLSearchParams(location.search);
+const headers = {};
+if (tg && tg.initData) headers['X-Init-Data'] = tg.initData;
+else if (params.get('dev')) headers['X-Dev-Key'] = params.get('dev');
+
+const $ = id => document.getElementById(id);
+const fmt = s => s.toFixed(1).replace('.', ',') + ' с';
+const RATE = 24000;          // сервер озвучки отдаёт сырой звук s16le, 24 кГц, моно
+const BYTES_PER_SECOND = RATE * 2;
+
+let ctx = null;
+let analyser = null;         // снимает громкость выходного звука: по ней двигается рот аватара
+let nextStart = 0;           // когда закончится уже поставленный в очередь звук (время ctx)
+let sources = [];            // { source, filler }
+let t0 = null;               // когда пришёл первый ответ: от него считаем «первый звук»
+let rows = new Map();
+let firstSoundMs = null;     // первый звук самого ответа
+let fillerSoundMs = null;    // первая фраза-заполнитель («Ищу в интернете…»)
+let answerStarted = false;   // звук ответа уже шёл: дальше пустая очередь значит пауза
+let eventsSeen = 0;
+let restarts = 0, dropped = 0, stalls = 0;   // для диагностики: сколько раз ответ начинался заново, звук отбрасывался и речь вставала
+
+function setStatus(text, cls) {
+  $('status').textContent = text;
+  $('dot').className = 'dot ' + (cls || '');
+}
+
+function diag() {
+  $('diag').textContent = 'Telegram: ' + (tg && tg.initData ? 'данные есть' : 'данных нет') +
+    ' · звук: ' + (ctx ? ctx.state : 'выключен') + ' · событий: ' + eventsSeen + ' · перезапусков: ' + restarts + ' · потеряно кусков звука: ' + dropped + ' · пауз: ' + stalls;
+}
+
+$('unlock').onclick = async () => {
+  try {
+    if (!ctx) {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      analyser = ctx.createAnalyser();
+      analyser.fftSize = 1024;
+      analyser.connect(ctx.destination);
+    }
+    await ctx.resume();
+    $('unlock').textContent = 'Звук включён';
+    $('unlock').disabled = true;
+    $('stop').disabled = false;
+  } catch (e) {
+    setStatus('Звук не включился: ' + e.message, 'err');
+  }
+  diag();
+};
+
+$('stop').onclick = () => stopAll();
+
+// Заполнители не обрываются, когда ответ начинается заново: пусть договорят.
+function stopAll(keepFillers) {
+  const now = ctx ? ctx.currentTime : 0;
+  let fillerEnd = 0;
+  sources = sources.filter(item => {
+    if (keepFillers && item.filler) { fillerEnd = Math.max(fillerEnd, item.end); return true; }
+    try { item.source.stop(); } catch (e) {}
+    return false;
+  });
+  nextStart = fillerEnd > now ? fillerEnd : 0;
+  answerStarted = false;
+  pending = [];
+  scheduledSec = 0;
+  if (!keepFillers) safety = 1;
+}
+
+$('sim').onclick = async () => {
+  if (!ctx) await $('unlock').onclick();
+  const body = JSON.stringify({ text: $('text').value, charsPerSecond: +$('cps').value, thinkMs: +$('think').value, toolStage: $('tool').value });
+  const r = await fetch('simulate', { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body });
+  if (!r.ok) setStatus('Не удалось запустить проверку: ' + r.status, 'err');
+};
+
+function resetReply(restarted) {
+  stopAll(restarted);
+  rows = new Map();
+  if (!restarted || t0 === null) { t0 = performance.now(); firstSoundMs = null; fillerSoundMs = null; }
+  $('chunks').innerHTML = '';
+  $('metrics').innerHTML = '<span style="color:var(--hint)">Ответ идёт…</span>';
+  $('verdict').textContent = '';
+}
+
+function onChunk(evt) {
+  if ($('chunks').firstElementChild && !$('chunks').firstElementChild.classList.contains('chunk')) $('chunks').innerHTML = '';
+  const el = document.createElement('div');
+  el.className = 'chunk';
+  el.innerHTML = '<div class="t"></div><div class="meta"></div>';
+  el.querySelector('.t').textContent = evt.text;
+  $('chunks').appendChild(el);
+  rows.set(evt.seq, { el, readyMs: evt.readyMs, startMs: evt.startMs, bytes: 0, firstAtMs: null, arrivedMs: null, lastAtMs: evt.startMs, doneMs: null, gap: 0, gaps: 0, estSec: evt.text.length / CHARS_PER_SECOND });
+  renderRow(rows.get(evt.seq));
+}
+
+// Каждый кусок звука ставится в очередь встык к предыдущему. Если очередь опустела (звук не успевает за речью),
+// воспроизведение начинается снова только после запаса, и пауза записывается.
+const CHARS_PER_SECOND = 14;   // примерная скорость речи: по ней оцениваем длину ещё не озвученного текста
+const MAX_LEAD = 20;          // дольше этого запаса ждать не имеет смысла
+let pending = [];              // звук, который ждёт начала воспроизведения: { buffer, row }
+let scheduledSec = 0;          // сколько звука уже поставлено в очередь
+let safety = 1;                // множитель запаса: растёт после каждой паузы в текущем ответе
+
+// Какую долю реального времени успевает считать голос (1 — ровно в темпе речи); считается только по времени работы.
+function genRate() {
+  let audio = 0, busy = 0;
+  for (const r of rows.values()) {
+    if (r.bytes === 0) continue;
+    audio += r.bytes / BYTES_PER_SECOND;
+    busy += ((r.doneMs ?? r.lastAtMs) - r.startMs) / 1000;
+  }
+  if (busy < 1.5 || audio < 1) return 0.6;
+  return Math.min(1, Math.max(0.3, audio / busy));
+}
+
+// Звук идёт сразу, пока очередь не пуста. Когда она пуста (начало или звук не успел), воспроизведение откладывается так,
+// чтобы накопленного хватило до конца известного текста при текущей скорости генерации, иначе речь снова встанет.
+function onAudio(evt) {
+  const row = rows.get(evt.seq);
+  if (!ctx || !row) { dropped++; return; }
+
+  const buffer = pcmToBuffer(evt.pcm);
+  row.bytes += buffer.length * 2;
+  row.lastAtMs = evt.atMs;
+  if (row.arrivedMs === null) row.arrivedMs = evt.atMs;
+
+  if (nextStart > ctx.currentTime + 0.005) schedule(buffer, row, nextStart);
+  else { pending.push({ buffer, row }); tryStart(false); }
+  renderRow(row);
+}
+
+function tryStart(force) {
+  if (!ctx || pending.length === 0) return;
+
+  const buffered = pending.reduce((s, p) => s + p.buffer.duration, 0);
+  const known = [...rows.values()].reduce((s, r) => s + Math.max(r.estSec, r.bytes / BYTES_PER_SECOND), 0);
+  const manual = Math.max(0, +$('pre').value || 0);
+  // Текст ещё дописывается, поэтому известной длины мало: берём запас с поправкой, и после каждой паузы он растёт.
+  const need = $('smart').checked
+    ? Math.min(MAX_LEAD, Math.max(manual, answerStarted ? 2 : 5,(known * 1.3 - scheduledSec) * (1 - genRate()) * safety))
+    : manual;
+  if (answerStarted && !force) {
+    // После остановки следующий кусок ждём целиком: пауза выходит короткой (около секунды-двух) между кусками,
+    // как пауза между предложениями, и не бывает посреди фразы.
+    if (!pending.every(p => p.row.doneMs !== null)) return;
+  } else if (!force && buffered < need) return;
+
+  const now = ctx.currentTime;
+  const start = now + 0.03;
+  if (answerStarted) {
+    safety = Math.min(3, safety * 1.4);
+    stalls++;
+    const gap = start - Math.max(nextStart, 0);
+    pending[0].row.gap += gap;
+    if (gap > 0.15) pending[0].row.gaps++;
+  }
+  answerStarted = true;
+
+  let at = start;
+  for (const p of pending) { schedule(p.buffer, p.row, at); at += p.buffer.duration; }
+  pending = [];
+}
+
+function schedule(buffer, row, start) {
+  const now = ctx.currentTime;
+  enqueue(buffer, start, false);
+  scheduledSec += buffer.duration;
+
+  if (row.firstAtMs === null) {
+    row.firstAtMs = row.arrivedMs;
+    setTimeout(() => {
+      document.querySelectorAll('.chunk.playing').forEach(c => c.classList.remove('playing'));
+      row.el.classList.add('playing');
+    }, Math.max(0, (start - now) * 1000));
+    if (firstSoundMs === null) firstSoundMs = performance.now() - t0 + (start - now) * 1000;
+  }
+}
+
+function pcmToBuffer(base64) {
+  const bin = atob(base64);
+  const samples = bin.length >> 1;
+  const buffer = ctx.createBuffer(1, samples, RATE);
+  const channel = buffer.getChannelData(0);
+  for (let i = 0; i < samples; i++) {
+    const v = bin.charCodeAt(2 * i) | (bin.charCodeAt(2 * i + 1) << 8);
+    channel[i] = (v >= 32768 ? v - 65536 : v) / 32768;
+  }
+  return buffer;
+}
+
+// Ставит звук в очередь на момент start и запоминает, когда он закончится.
+function enqueue(buffer, start, filler) {
+  const source = ctx.createBufferSource();
+  source.buffer = buffer;
+  source.connect(analyser || ctx.destination);
+  source.start(start);
+  const item = { source, filler, end: start + buffer.duration };
+  source.onended = () => { sources = sources.filter(s => s !== item); };
+  sources.push(item);
+  nextStart = item.end;
+}
+
+// Фраза-заполнитель приходит целиком и играет сразу (или после того, что уже в очереди).
+function onFiller(evt) {
+  if (!ctx) return;
+  const now = ctx.currentTime;
+  const start = Math.max(now + 0.03, nextStart);
+  enqueue(pcmToBuffer(evt.pcm), start, true);
+  if (fillerSoundMs === null) fillerSoundMs = performance.now() - t0 + (start - now) * 1000;
+
+  if ($('chunks').firstElementChild && !$('chunks').firstElementChild.classList.contains('chunk')) $('chunks').innerHTML = '';
+  const el = document.createElement('div');
+  el.className = 'chunk';
+  el.innerHTML = '<div class="t"></div><div class="meta">фраза-заполнитель, готовая из кэша</div>';
+  el.querySelector('.t').textContent = '🔈 ' + evt.text;
+  $('chunks').appendChild(el);
+  render();
+}
+
+function onChunkEnd(evt) {
+  const row = rows.get(evt.seq);
+  if (!row) return;
+  row.doneMs = evt.doneMs;
+  renderRow(row);
+}
+
+function renderRow(row) {
+  const dur = row.bytes / BYTES_PER_SECOND;
+  const parts = [];
+  if (row.firstAtMs !== null) parts.push(`первый звук через ${fmt((row.firstAtMs - row.startMs) / 1000)}`);
+  parts.push(`речи ${fmt(dur)}`);
+  if (row.doneMs !== null && dur > 0) parts.push(`генерация ${fmt((row.doneMs - row.startMs) / 1000)} (×${((row.doneMs - row.startMs) / 1000 / dur).toFixed(2).replace('.', ',')})`);
+  else parts.push('идёт…');
+  const gap = row.gaps > 0 ? ` · <b>пауз ${row.gaps}, ${fmt(row.gap)}</b>` : '';
+  row.el.querySelector('.meta').innerHTML = parts.join(' · ') + gap;
+}
+
+function render() {
+  const all = [...rows.values()];
+  const done = all.filter(r => r.doneMs !== null && r.bytes > 0);
+  if (all.length === 0 || all[0].firstAtMs === null) {
+    if (fillerSoundMs !== null) {
+      $('metrics').innerHTML = `<div class="kv"><span>Первая реакция голосом (заполнитель)</span><span>${fmt(fillerSoundMs / 1000)}</span></div>`;
+    }
+    return;
+  }
+
+  const audio = all.reduce((s, r) => s + r.bytes / BYTES_PER_SECOND, 0);
+  const gen = done.reduce((s, r) => s + (r.doneMs - r.startMs) / 1000, 0);
+  const doneAudio = done.reduce((s, r) => s + r.bytes / BYTES_PER_SECOND, 0);
+  const gapsN = all.reduce((s, r) => s + r.gaps, 0);
+  const gapTotal = all.reduce((s, r) => s + r.gap, 0);
+  const rtf = doneAudio > 0 ? gen / doneAudio : 0;
+
+  $('metrics').innerHTML = [
+    ...(fillerSoundMs !== null ? [['Первая реакция голосом (заполнитель)', fmt(fillerSoundMs / 1000)]] : []),
+    ['Первый звук самого ответа', fmt(firstSoundMs / 1000)],
+    ['Первая фраза: от готового текста до звука', fmt((all[0].firstAtMs - all[0].readyMs) / 1000)],
+    ['Пауз внутри речи', gapsN + (gapsN ? ' (всего ' + fmt(gapTotal) + ')' : '')],
+    ['Скорость озвучки (меньше 1 — успевает)', done.length ? rtf.toFixed(2).replace('.', ',') : '…'],
+    ['Фраз / речи', all.length + ' / ' + fmt(audio)],
+  ].map(([k, v]) => `<div class="kv"><span>${k}</span><span>${v}</span></div>`).join('');
+
+  const verdict = $('verdict');
+  if (done.length < 2 || doneAudio < 6) { verdict.className = 'verdict'; verdict.textContent = 'Мало речи для вывода.'; return; }
+  if (gapsN === 0 && rtf <= 0.95) { verdict.className = 'verdict ok'; verdict.textContent = 'Успевает: речь идёт без пауз.'; }
+  else if (gapTotal <= 0.15 * audio) { verdict.className = 'verdict warn'; verdict.textContent = 'На грани: заметны короткие паузы.'; }
+  else { verdict.className = 'verdict bad'; verdict.textContent = 'Не успевает: речь рвётся паузами.'; }
+}
+
+function handle(evt) {
+  eventsSeen++;
+  if (evt.type === 'start') { if (evt.restarted) restarts++; resetReply(evt.restarted); }
+  else if (evt.type === 'chunk') onChunk(evt);
+  else if (evt.type === 'audio') onAudio(evt);
+  else if (evt.type === 'filler') onFiller(evt);
+  else if (evt.type === 'chunkEnd') { onChunkEnd(evt); tryStart([...rows.values()].every(r => r.doneMs !== null)); }
+  else if (evt.type === 'done') tryStart(true);
+  else if (evt.type === 'error') setStatus('Озвучка: ' + evt.message, 'err');
+  if (evt.type === 'chunkEnd' || evt.type === 'done') render();
+}
+
+// Длинные запросы: сервер держит запрос до новых событий (до 20 с) и отвечает сразу, как они появились.
+let after = 0;
+let epoch = '';
+
+async function connect() {
+  for (;;) {
+    try {
+      const response = await fetch(`poll?after=${after}&epoch=${epoch}`, { headers, cache: 'no-store' });
+      if (response.status === 401) { setStatus('Нет доступа: открой плеер из бота', 'err'); return; }
+      if (!response.ok) throw new Error(response.status);
+      const body = await response.json();
+      if (body.epoch !== epoch) { epoch = body.epoch; after = 0; }
+      setStatus('Подключено, жду ответ', 'on');
+      for (const item of body.events) {
+        after = Math.max(after, item.seq);
+        handle(JSON.parse(item.data));
+      }
+      diag();
+    } catch (e) {
+      setStatus('Связь потеряна, переподключаюсь…', 'err');
+      await new Promise(r => setTimeout(r, 2000));
+    }
+  }
+}
+
+// Аватар: рот открывается по громкости звука, который сейчас идёт (анализатор на выходе), глаза моргают, голова слегка покачивается.
+const A = id => document.getElementById(id);
+const avatarState = { mouth: 0, blinkAt: 0, blink: 0, gx: 0, gy: 0, gxT: 0, gyT: 0, gazeAt: 0, brow: 0 };
+const samples = new Uint8Array(1024);
+
+function loudness() {
+  if (!analyser || !ctx || ctx.state !== 'running') return 0;
+  analyser.getByteTimeDomainData(samples);
+  let sum = 0;
+  for (let i = 0; i < samples.length; i++) { const v = (samples[i] - 128) / 128; sum += v * v; }
+  return Math.sqrt(sum / samples.length);
+}
+
+function drawAvatar(now) {
+  const s = avatarState;
+  const level = Math.min(1, loudness() * 6);                       // 0..1
+  const speaking = sources.length > 0 && level > 0.02;
+  // быстро открываем, медленнее закрываем: рот не дёргается на каждом слоге
+  s.mouth += (level - s.mouth) * (level > s.mouth ? 0.55 : 0.25);
+  const open = s.mouth;
+  const w = 24 + open * 4;                                            // уголки чуть сходятся при открытом рте
+  const y = 186, h = open * 26;
+  A('mouthIn').setAttribute('d', `M${120 - w} ${y} Q120 ${y - 2} ${120 + w} ${y} Q120 ${y + h * 1.6 + 2} ${120 - w} ${y} Z`);
+  A('mouthLip').setAttribute('d', `M${120 - w} ${y} Q120 ${y + 10 + h * 1.5} ${120 + w} ${y}`);
+  A('mouthIn').setAttribute('fill-opacity', open > 0.04 ? 1 : 0);
+
+  if (now > s.blinkAt) { s.blink = 1; s.blinkAt = now + 2200 + Math.random() * 3500; }
+  s.blink = Math.max(0, s.blink - 0.14);
+  const lid = Math.sin(Math.min(1, s.blink) * Math.PI) * 22;          // веко опускается и поднимается за ~7 кадров
+  A('lidL').setAttribute('height', lid); A('lidR').setAttribute('height', lid);
+
+  if (now > s.gazeAt) { s.gxT = (Math.random() - .5) * 6; s.gyT = (Math.random() - .5) * 3; s.gazeAt = now + 900 + Math.random() * 2200; }
+  s.gx += (s.gxT - s.gx) * 0.08; s.gy += (s.gyT - s.gy) * 0.08;
+  for (const id of ['eyeL', 'eyeR']) A(id).setAttribute('transform', `translate(${s.gx.toFixed(2)} ${s.gy.toFixed(2)})`);
+
+  s.brow += ((speaking ? -2.5 * level : 0) - s.brow) * 0.1;           // брови чуть поднимаются на ударных
+  A('browL').setAttribute('transform', `translate(0 ${s.brow.toFixed(2)})`);
+  A('browR').setAttribute('transform', `translate(0 ${s.brow.toFixed(2)})`);
+
+  const t = now / 1000;
+  const sway = Math.sin(t * 0.9) * 1.2 + (speaking ? Math.sin(t * 5.3) * open * 1.6 : 0);
+  A('head').setAttribute('transform', `rotate(${sway.toFixed(2)} 120 262) translate(0 ${(Math.sin(t * 1.3) * 1.2).toFixed(2)})`);
+  requestAnimationFrame(drawAvatar);
+}
+requestAnimationFrame(drawAvatar);
+
+diag();
+connect();
+</script>
+</body>
+</html>

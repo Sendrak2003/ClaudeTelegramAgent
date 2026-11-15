@@ -8,6 +8,9 @@ public interface IMessageSender
 
     Task SendTypingAsync(ChatId chatId, CancellationToken ct);
 
+    /// <summary>Отправляет голосовое сообщение (OGG/Opus).</summary>
+    Task SendVoiceAsync(ChatId chatId, byte[] oggOpus, CancellationToken ct);
+
     /// <summary>
     /// Показывает частичный текст как живой черновик (sendMessageDraft): Telegram плавно дорисовывает его по мере обновлений.
     /// Повторные вызовы с тем же <paramref name="draftId"/> обновляют один и тот же черновик; итоговое сообщение

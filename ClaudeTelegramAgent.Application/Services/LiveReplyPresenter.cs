@@ -13,14 +13,14 @@ namespace ClaudeTelegramAgent.Application.Services;
 /// и пройденными этапами), а как только пошёл текст ответа, статус заменяется растущим ответом.
 /// Итоговое сообщение с форматированием отправляется отдельно, когда ответ готов.
 /// </summary>
-public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILogger logger)
+public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILogger logger, IReadOnlyList<IAddonRun>? addons = null)
 {
     private static readonly TimeSpan FirstFlushDelay = TimeSpan.FromMilliseconds(300);
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromMilliseconds(400);
     private const int MaxVisibleStages = 4;
     private const int MaxStreamedLength = 3800;
+    private static readonly char[] SentenceEnds = ['.', '!', '?', '…', '\n'];
 
-    // Id анимированных кастомных эмодзи этапов; показываются только если включён Telegram:UseCustomEmoji.
     private const string ThinkingIcon = "5456125285160226779";
     private const string SearchIcon = "5537244684667060232";
     private const string FilesIcon = "5537186088428240919";
@@ -47,6 +47,7 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
         {
             CompleteRunningUnsafe();
             _steps.Add(new Step(headline, stage, ThinkingIcon));
+            NotifyStage(headline);
         }
     }
 
@@ -58,7 +59,6 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
         }
     }
 
-    // Вызывается из потока чтения stdout claude — поэтому всё под замком.
     public void OnProgress(AgentProgress progress)
     {
         lock (_gate)
@@ -74,11 +74,17 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
                     break;
 
                 case AgentProgressKind.ToolStarted:
-                    // Служебные инструменты (подгрузка других инструментов и т.п.) пользователю не показываем.
-                    if (Step.ForTool(progress.Text) is { } toolStep)
+                    var toolStep = Step.ForTool(progress.Text);
+                    if (toolStep is not null)
                     {
                         CompleteRunningUnsafe();
                         _steps.Add(toolStep);
+                    }
+
+                    RestartAddons();
+                    if (toolStep is not null)
+                    {
+                        NotifyStage(toolStep.Headline);
                     }
 
                     break;
@@ -86,7 +92,6 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
                 case AgentProgressKind.ToolFinished:
                     if (progress.Text == "error")
                     {
-                        // Инструмент завершился ошибкой: в строке этапов он получит ✗ вместо ✓.
                         foreach (var step in _steps.Where(s => !s.Done && s.Stage is not null))
                         {
                             step.Failed = true;
@@ -99,14 +104,50 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
 
                 case AgentProgressKind.TextStarted:
                     CompleteRunningUnsafe();
-                    // В итоговый ответ идёт только последний текстовый блок, поэтому новый блок начинает поток заново.
                     _answer.Clear();
+                    RestartAddons();
                     break;
 
                 case AgentProgressKind.TextDelta:
                     _answer.Append(progress.Text);
+
+                    if (addons is { Count: > 0 } && progress.Text?.IndexOfAny(SentenceEnds) >= 0)
+                    {
+                        var soFar = _answer.ToString();
+                        foreach (var addon in addons)
+                        {
+                            addon.OnAnswerGrowing(soFar);
+                        }
+                    }
+
                     break;
             }
+        }
+    }
+
+    private void NotifyStage(string headline)
+    {
+        if (addons is null)
+        {
+            return;
+        }
+
+        foreach (var addon in addons)
+        {
+            addon.OnStage(headline);
+        }
+    }
+
+    private void RestartAddons()
+    {
+        if (addons is null)
+        {
+            return;
+        }
+
+        foreach (var addon in addons)
+        {
+            addon.Restart();
         }
     }
 
@@ -116,7 +157,6 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
         await sender.SendAsync(chatId, finalText, ct);
     }
 
-    // Запуск упал или отменён: черновик со «статусом» нельзя оставлять висеть, поэтому шлём короткое сообщение.
     public async Task FailAsync(string reason)
     {
         await StopLoopAsync();
@@ -137,7 +177,6 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
         }
         catch (OperationCanceledException)
         {
-            // Нормальная остановка: ответ готов.
         }
     }
 
@@ -210,7 +249,6 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            // Сбой живого отображения (сеть, лимиты Telegram) не должен ломать сам ответ.
             logger.LogWarning(ex, "Live reply update failed for chat {ChatId}", chatId);
         }
     }
@@ -231,7 +269,6 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
 
         public static Step Thinking() => new("Думаю", null, ThinkingIcon);
 
-        // null — служебный инструмент, в статусе его не показываем.
         public static Step? ForTool(string? name)
         {
             if (string.IsNullOrEmpty(name))

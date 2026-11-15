@@ -1,3 +1,4 @@
+using ClaudeTelegramAgent.Application.Abstractions;
 using ClaudeTelegramAgent.Application.Services;
 using ClaudeTelegramAgent.Hosting;
 using ClaudeTelegramAgent.Infrastructure;
@@ -5,13 +6,13 @@ using ClaudeTelegramAgent.Infrastructure.Claude;
 using ClaudeTelegramAgent.Infrastructure.Reminders;
 using ClaudeTelegramAgent.Infrastructure.Speech;
 using ClaudeTelegramAgent.Infrastructure.Telegram;
+using ClaudeTelegramAgent.Live;
 using ClaudeTelegramAgent.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.AddServiceDefaults();
 
-// Add services to the container.
 
 var configuration = builder.Configuration;
 
@@ -31,7 +32,6 @@ var claudeAuthMode = claudeAuthModeRaw.Equals("apikey", StringComparison.Ordinal
 var claudeApiKey = configuration["Claude:ApiKey"];
 var claudeModelConfigured = configuration["Claude:Model"];
 var claudeModel = string.IsNullOrWhiteSpace(claudeModelConfigured) ? null : claudeModelConfigured.Trim();
-// Пустое или нулевое значение = без ограничения.
 int? claudeMaxTurns = int.TryParse(configuration["Claude:MaxTurns"], out var maxTurnsParsed) && maxTurnsParsed > 0
     ? maxTurnsParsed
     : null;
@@ -43,9 +43,6 @@ if (string.IsNullOrWhiteSpace(telegramBotToken))
 }
 
 var reminderDbPathConfigured = configuration["Reminders:DbPath"];
-// "" в appsettings.json — не null, поэтому обычный ?? тут не сработал бы:
-// пустая строка воспринималась бы SQLite как одноразовая анонимная БД в памяти,
-// из-за чего напоминания молча "терялись" при каждом новом подключении.
 var reminderDbPath = string.IsNullOrWhiteSpace(reminderDbPathConfigured)
     ? Path.Combine(claudeWorkDir, ".agent-data", "reminders.db")
     : reminderDbPathConfigured;
@@ -72,8 +69,6 @@ if (allowedUserIds.Count == 0)
 var sessionsFilePath = Path.Combine(claudeWorkDir, ".agent-data", "sessions.json");
 var incomingFilesDirectory = Path.Combine(claudeWorkDir, ".agent-data", "incoming");
 
-// Распознавание голосовых: Whisper через sherpa-onnx, модели лежат в .agent-data/models (вне git).
-// Всё переопределяется через конфиг Speech:*, значения по умолчанию подходят для локального запуска.
 var agentDataDir = Path.Combine(claudeWorkDir, ".agent-data");
 string SpeechSetting(string key, string fallback) =>
     string.IsNullOrWhiteSpace(configuration[key]) ? fallback : configuration[key]!;
@@ -109,6 +104,44 @@ builder.Services.AddTelegramMessaging(new TelegramOptions(
 builder.Services.AddSpeechTranscription(speechOptions);
 builder.Services.AddSystemClock(agentTimeZone);
 
+double? voiceTemperature = double.TryParse(configuration["Voice:Temperature"], System.Globalization.CultureInfo.InvariantCulture, out var temperatureParsed)
+    ? temperatureParsed
+    : null;
+builder.Services.AddSpeechSynthesis(new QwenTtsOptions(
+    SpeechSetting("Voice:BaseUrl", "http://vivian:8099"),
+    SpeechSetting("Voice:Speaker", "vivian"),
+    SpeechSetting("Voice:Language", "Russian"),
+    voiceTemperature,
+    configuration.GetValue("Voice:TimeoutSeconds", 120),
+    SpeechSetting("Voice:Ffmpeg", "ffmpeg"),
+    configuration["Voice:AudioFilter"]),
+    Path.Combine(agentDataDir, "voice-cache"),
+    configuration.GetValue("Voice:CacheMaxFiles", 500));
+builder.Services.AddSingleton(new VoiceReplyOptions(
+    configuration.GetValue("Voice:Enabled", false),
+    configuration.GetValue("Voice:MaxChars", 700),
+    configuration.GetValue("Voice:OnlyAfterVoiceInput", false),
+    configuration.GetValue("Voice:BatchFromChunks", 0),
+    configuration.GetValue("Voice:BatchParallelism", 4),
+    configuration.GetValue("Voice:DefaultOn", true)));
+builder.Services.AddSingleton<VoiceReplyService>();
+builder.Services.AddSingleton<IReplyAddon>(sp => sp.GetRequiredService<VoiceReplyService>());
+
+builder.Services.AddSingleton<LiveVoiceHub>();
+builder.Services.AddSingleton(sp => new LiveFillerCache(
+    sp.GetRequiredService<ISpeechStreamer>(),
+    Path.Combine(agentDataDir, "voice-fillers"),
+    $"{SpeechSetting("Voice:Speaker", "vivian")}|{SpeechSetting("Voice:Language", "Russian")}|{voiceTemperature}",
+    sp.GetRequiredService<ILogger<LiveFillerCache>>()));
+builder.Services.AddSingleton(new LiveVoiceOptions(
+    configuration.GetValue("Live:Enabled", true),
+    configuration.GetValue("Live:MaxChars", 1500),
+    configuration["Live:PublicUrl"],
+    configuration.GetValue("Live:BatchMax", 3)));
+SpeechText.ConfigureChunks(configuration.GetValue("Voice:ChunkTarget", 100), configuration.GetValue("Voice:ChunkMax", 160));
+builder.Services.AddSingleton<LiveVoiceService>();
+builder.Services.AddSingleton<IReplyAddon>(sp => sp.GetRequiredService<LiveVoiceService>());
+
 builder.Services.AddSingleton<AgentConversationService>();
 builder.Services.AddSingleton<ReminderService>();
 builder.Services.AddSingleton<ReminderDeliveryService>();
@@ -122,13 +155,16 @@ var app = builder.Build();
 
 app.MapDefaultEndpoints();
 
-// Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
 }
 
 app.UseHttpsRedirection();
+app.UseDefaultFiles();
+app.UseStaticFiles();
+
+app.MapLive(telegramBotToken, allowedUserIds, configuration["Live:DevKey"]);
 
 app.MapGet("/status", (IConfiguration config) => Results.Ok(new
 {

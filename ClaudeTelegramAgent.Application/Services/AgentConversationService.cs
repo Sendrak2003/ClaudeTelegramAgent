@@ -12,20 +12,32 @@ public sealed class AgentConversationService(
     IMessageSender messageSender,
     IAgentClock clock,
     ISpeechTranscriber transcriber,
+    IEnumerable<IReplyAddon> addons,
+    IAddonSettings addonSettings,
     ILogger<AgentConversationService> logger)
 {
+    private readonly IReplyAddon[] _addons = addons.ToArray();
+
+    public IReadOnlyList<IReplyAddon> Addons => _addons;
+
+    public bool IsAddonEnabled(ChatId chatId, IReplyAddon addon) =>
+        addon.Available && (addonSettings.Get(chatId, addon.Name) ?? addon.EnabledByDefault);
+
+    public void SetAddon(ChatId chatId, IReplyAddon addon, bool enabled) => addonSettings.Set(chatId, addon.Name, enabled);
+
     public async Task HandleMessageAsync(ChatId chatId, string text, string? audioPath, CancellationToken ct)
     {
         var sessionId = sessions.GetActiveSessionId(chatId);
 
-        // Telegram гасит индикатор "печатает" через ~5 секунд, а ответ агента (особенно
-        // с браузером) может идти минутами — поэтому обновляем его, пока claude работает.
-        // Индикатор идёт и во время распознавания голосового.
         using var typingCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var typingLoop = KeepTypingAsync(chatId, typingCts.Token);
 
-        // Статус с этапами и ответ, растущий по мере генерации (см. LiveReplyPresenter).
-        var live = new LiveReplyPresenter(messageSender, chatId, logger);
+        var runs = _addons
+            .Where(a => IsAddonEnabled(chatId, a))
+            .Select(a => a.Begin(chatId, audioPath is not null))
+            .OfType<IAddonRun>()
+            .ToList();
+        var live = new LiveReplyPresenter(messageSender, chatId, logger, runs);
         live.Start(ct);
 
         ClaudeAgentReply reply;
@@ -44,6 +56,7 @@ public sealed class AgentConversationService(
         }
         catch (Exception ex)
         {
+            runs.ForEach(r => r.Cancel());
             await live.FailAsync(ex is OperationCanceledException ? "Остановлено." : "Не удалось получить ответ.");
             throw;
         }
@@ -59,10 +72,10 @@ public sealed class AgentConversationService(
         }
 
         await live.FinishAsync(reply.Text, ct);
+
+        runs.ForEach(r => r.Deliver(reply.Text));
     }
 
-    // Сбой распознавания не должен терять сообщение: модель всё равно получает промпт
-    // и честно скажет пользователю, что голосовое не расшифровано.
     private async Task<string> AppendTranscriptAsync(string text, string audioPath, CancellationToken ct)
     {
         string line;
@@ -94,7 +107,6 @@ public sealed class AgentConversationService(
                 }
                 catch (Exception) when (!ct.IsCancellationRequested)
                 {
-                    // Сбой индикатора (сеть, лимиты) не должен ломать основной ответ.
                 }
 
                 await Task.Delay(TimeSpan.FromSeconds(4), ct);
@@ -102,7 +114,6 @@ public sealed class AgentConversationService(
         }
         catch (OperationCanceledException)
         {
-            // Нормальное завершение: ответ готов, индикатор больше не нужен.
         }
     }
 

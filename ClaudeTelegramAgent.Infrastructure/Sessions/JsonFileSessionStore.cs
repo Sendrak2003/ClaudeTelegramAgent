@@ -5,7 +5,7 @@ using ClaudeTelegramAgent.Domain;
 
 namespace ClaudeTelegramAgent.Infrastructure.Sessions;
 
-public sealed class JsonFileSessionStore : ISessionStore
+public sealed class JsonFileSessionStore : ISessionStore, IAddonSettings
 {
     private readonly string _filePath;
     private readonly object _lock = new();
@@ -87,6 +87,25 @@ public sealed class JsonFileSessionStore : ISessionStore
         }
     }
 
+    public bool? Get(ChatId chatId, string addonName)
+    {
+        lock (_lock)
+        {
+            var state = GetOrCreateState(chatId.ToString());
+            return state.Addons.TryGetValue(addonName, out var enabled) ? enabled : null;
+        }
+    }
+
+    public void Set(ChatId chatId, string addonName, bool enabled)
+    {
+        lock (_lock)
+        {
+            var state = GetOrCreateState(chatId.ToString());
+            state.Addons[addonName] = enabled;
+            Save();
+        }
+    }
+
     private ChatState GetOrCreateState(string key)
     {
         if (!_chats.TryGetValue(key, out var state))
@@ -147,6 +166,8 @@ public sealed class JsonFileSessionStore : ISessionStore
         public int NextSlot { get; set; } = 2;
 
         public Dictionary<int, SlotState> Slots { get; set; } = new();
+
+        public Dictionary<string, bool> Addons { get; set; } = new();
     }
 
     private sealed class SlotState
