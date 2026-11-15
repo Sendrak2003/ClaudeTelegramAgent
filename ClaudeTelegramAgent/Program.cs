@@ -83,6 +83,7 @@ var speechOptions = new SpeechOptions(
     configuration.GetValue("Speech:TimeoutSeconds", 600));
 
 builder.Services.AddSingleton(new AccessControlOptions(allowedUserIds));
+builder.Services.AddSingleton<AccessList>();
 builder.Services.AddSingleton(new ReminderPollingOptions(reminderPollSeconds));
 
 builder.Services.AddClaudeAgentClient(new ClaudeCliOptions(

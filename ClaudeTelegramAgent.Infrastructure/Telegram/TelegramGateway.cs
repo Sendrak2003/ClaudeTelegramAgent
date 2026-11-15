@@ -65,6 +65,18 @@ public sealed class TelegramGateway : IMessageSender, IIncomingMessageListener, 
             ],
             cancellationToken: ct);
 
+        try
+        {
+            await _bot.SetMyDescription(
+                "ИИ-ассистент в Telegram: отвечает на вопросы, пишет и правит тексты, ищет в интернете, читает файлы и страницы, понимает голосовые, ставит напоминания и озвучивает ответы.\n\nНажмите «Start», чтобы начать.",
+                cancellationToken: ct);
+            await _bot.SetMyShortDescription("ИИ-ассистент: вопросы, тексты, поиск, голос, напоминания", cancellationToken: ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to set bot description");
+        }
+
         _bot.OnMessage += async (message, updateType) =>
         {
             var text = message.Text ?? message.Caption;
@@ -232,12 +244,36 @@ public sealed class TelegramGateway : IMessageSender, IIncomingMessageListener, 
         }
     }
 
+    public async Task SendWithActionsAsync(ChatId chatId, string text, IReadOnlyList<IReadOnlyList<(string Label, string Action, string Argument)>> rows, CancellationToken ct)
+    {
+        var keyboard = new InlineKeyboardMarkup(rows.Select(row =>
+            row.Select(b => InlineKeyboardButton.WithCallbackData(b.Label, $"act:{b.Action}:{b.Argument}")).ToArray()));
+
+        try
+        {
+            await _bot.SendMessage(chatId.Value, ConvertMarkdownToTelegramHtml(text), parseMode: ParseMode.Html, replyMarkup: keyboard, cancellationToken: ct);
+        }
+        catch (ApiRequestException ex) when (ex.Message.Contains("can't parse entities", StringComparison.OrdinalIgnoreCase))
+        {
+            await _bot.SendMessage(chatId.Value, text, replyMarkup: keyboard, cancellationToken: ct);
+        }
+    }
+
     /// <summary>Нажатие кнопки: убираем клавиатуру и передаём подпись агенту как обычное сообщение пользователя.</summary>
     private async Task HandleCallbackAsync(CallbackQuery query, CancellationToken ct)
     {
         var chatId = query.Message?.Chat.Id;
         string? label = null;
-        if (chatId is { } id
+
+        if (query.Data is { } actData && actData.StartsWith("act:", StringComparison.Ordinal))
+        {
+            var parts = actData.Split(':', 3);
+            if (parts.Length == 3 && chatId is not null)
+            {
+                label = $"/{parts[1]} {parts[2].Replace(':', ' ')}";
+            }
+        }
+        else if (chatId is { } id
             && query.Data is { } data && data.StartsWith("opt:", StringComparison.Ordinal)
             && int.TryParse(data.AsSpan(4), out var index)
             && _buttonLabels.TryGetValue(id, out var labels)

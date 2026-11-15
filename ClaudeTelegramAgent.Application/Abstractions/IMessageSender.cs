@@ -9,6 +9,11 @@ public interface IMessageSender
     /// <summary>Отправляет текст; под последним сообщением показывает кнопки (по одной в ряд). Нажатие приходит как обычное входящее сообщение с подписью кнопки.</summary>
     Task SendWithButtonsAsync(ChatId chatId, string text, IReadOnlyList<string> buttons, CancellationToken ct);
 
+    /// <summary>
+    /// Отправляет текст с рядами кнопок-действий. Данные кнопки вида «access:allow:123» после нажатия приходят как служебная команда «/access allow 123».
+    /// </summary>
+    Task SendWithActionsAsync(ChatId chatId, string text, IReadOnlyList<IReadOnlyList<(string Label, string Action, string Argument)>> rows, CancellationToken ct);
+
     Task SendTypingAsync(ChatId chatId, CancellationToken ct);
 
     /// <summary>Отправляет голосовое сообщение (OGG/Opus).</summary>

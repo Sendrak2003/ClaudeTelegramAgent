@@ -12,7 +12,7 @@ public sealed class BotHostedService(
     IMessageSender messageSender,
     AgentConversationService conversation,
     ClaudeCliOptions claudeOptions,
-    AccessControlOptions access,
+    AccessList accessList,
     LiveVoiceService liveVoice,
     IWebAppLauncher webApp,
     ILogger<BotHostedService> logger) : BackgroundService
@@ -30,7 +30,7 @@ public sealed class BotHostedService(
         "/voice — голосовые ответы, /live — живая озвучка в плеере\n\n" +
         "Просто напишите, что нужно, или выберите пример ниже.";
 
-    private static readonly string[] HelpButtons = ["Что ты умеешь на примерах", "Поставь напоминание", "Сравни два варианта таблицей"];
+    private static readonly string[] HelpButtons = ["Покажи, что ты умеешь, на примерах", "Напомни через час выпить воды", "Сравни Python и C# таблицей"];
 
     private readonly System.Collections.Concurrent.ConcurrentDictionary<long, DateTimeOffset> _deniedAt = new();
 
@@ -56,22 +56,60 @@ public sealed class BotHostedService(
             logger.LogWarning(ex, "Failed to send access-closed reply to {UserId}", message.UserId);
         }
 
-        // Владельцам (в личке id чата равен id пользователя) сообщаем, кто стучится, чтобы добавить его в Agent__AllowedUserIds.
         var who = message.Username is { Length: > 0 } name ? $"@{name}" : "без username";
         var preview = message.Text.Length > 100 ? message.Text[..100] + "…" : message.Text;
-        foreach (var ownerId in access.AllowedUserIds)
+        IReadOnlyList<IReadOnlyList<(string Label, string Action, string Argument)>> rows =
+        [
+            [("✅ Разрешить", "access", $"allow:{message.UserId}"), ("🚫 Заблокировать", "access", $"deny:{message.UserId}")],
+        ];
+        foreach (var ownerId in accessList.Owners)
         {
             try
             {
-                await messageSender.SendAsync(
+                await messageSender.SendWithActionsAsync(
                     new ChatId(ownerId),
-                    $"Новый пользователь пытается написать боту.\nid: `{message.UserId}`\nusername: {who}\nСообщение: {preview}\n\nЧтобы дать доступ, добавьте id в Agent__AllowedUserIds в .env и перезапустите бота.",
+                    $"Новый пользователь пытается написать боту.\nid: `{message.UserId}`\nusername: {who}\nСообщение: {preview}",
+                    rows,
                     ct);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 logger.LogWarning(ex, "Failed to notify owner {OwnerId} about {UserId}", ownerId, message.UserId);
             }
+        }
+    }
+
+    /// <summary>«/access allow ID» и «/access deny ID» (приходят от кнопок в уведомлении): только владельцы из Agent__AllowedUserIds.</summary>
+    private async Task HandleAccessAsync(IncomingMessage message, string text, CancellationToken ct)
+    {
+        var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (!accessList.IsOwner(message.UserId) || parts.Length != 3 || !long.TryParse(parts[2], out var targetId))
+        {
+            return;
+        }
+
+        if (parts[1].Equals("allow", StringComparison.OrdinalIgnoreCase))
+        {
+            accessList.Allow(targetId);
+            await messageSender.SendAsync(message.ChatId, $"✅ Доступ выдан: `{targetId}`.", ct);
+            await TrySendAsync(new ChatId(targetId), "Доступ открыт! Нажмите /start, чтобы начать.", ct);
+        }
+        else if (parts[1].Equals("deny", StringComparison.OrdinalIgnoreCase))
+        {
+            accessList.Block(targetId);
+            await messageSender.SendAsync(message.ChatId, $"🚫 Заблокирован: `{targetId}`. Его сообщения игнорируются.", ct);
+        }
+    }
+
+    private async Task TrySendAsync(ChatId chatId, string text, CancellationToken ct)
+    {
+        try
+        {
+            await messageSender.SendAsync(chatId, text, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Failed to send message to {ChatId}", chatId);
         }
     }
 
@@ -83,14 +121,24 @@ public sealed class BotHostedService(
 
     private async Task HandleMessageAsync(IncomingMessage message, CancellationToken ct)
     {
-        if (!access.AllowedUserIds.Contains(message.UserId))
+        if (!accessList.IsAllowed(message.UserId))
         {
             logger.LogWarning("Ignoring message from unauthorized user {UserId} ({Username})", message.UserId, message.Username);
-            await ReplyAccessClosedAsync(message, ct);
+            if (!accessList.IsBlocked(message.UserId))
+            {
+                await ReplyAccessClosedAsync(message, ct);
+            }
+
             return;
         }
 
         var text = message.Text.Trim();
+
+        if (text.StartsWith("/access ", StringComparison.OrdinalIgnoreCase))
+        {
+            await HandleAccessAsync(message, text, ct);
+            return;
+        }
 
         if (text.StartsWith("/switch", StringComparison.OrdinalIgnoreCase))
         {
