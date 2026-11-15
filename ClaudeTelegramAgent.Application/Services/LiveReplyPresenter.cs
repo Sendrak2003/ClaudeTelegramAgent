@@ -113,7 +113,7 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
 
                     if (addons is { Count: > 0 } && progress.Text?.IndexOfAny(SentenceEnds) >= 0)
                     {
-                        var soFar = _answer.ToString();
+                        var soFar = ReplyButtons.StripForStreaming(_answer.ToString());
                         foreach (var addon in addons)
                         {
                             addon.OnAnswerGrowing(soFar);
@@ -154,7 +154,15 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
     public async Task FinishAsync(string finalText, CancellationToken ct)
     {
         await StopLoopAsync();
-        await sender.SendAsync(chatId, finalText, ct);
+        var (text, buttons) = ReplyButtons.Extract(finalText);
+        if (buttons.Count > 0)
+        {
+            await sender.SendWithButtonsAsync(chatId, text, buttons, ct);
+        }
+        else
+        {
+            await sender.SendAsync(chatId, text, ct);
+        }
     }
 
     public async Task FailAsync(string reason)
@@ -213,7 +221,12 @@ public sealed class LiveReplyPresenter(IMessageSender sender, ChatId chatId, ILo
 
     private (string Text, string? Icon) RenderUnsafe()
     {
-        var answer = _answer.ToString().TrimEnd();
+        var answer = ReplyButtons.StripForStreaming(_answer.ToString(), out var hadTable);
+        if (hadTable)
+        {
+            answer = (answer + "\n\nСобираю таблицу…").TrimStart();
+        }
+
         if (answer.Length > 0)
         {
             return (answer.Length > MaxStreamedLength ? "…" + answer[^MaxStreamedLength..] : answer, null);

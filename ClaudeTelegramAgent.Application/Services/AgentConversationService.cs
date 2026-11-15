@@ -73,7 +73,8 @@ public sealed class AgentConversationService(
 
         await live.FinishAsync(reply.Text, ct);
 
-        runs.ForEach(r => r.Deliver(reply.Text));
+        var spoken = ReplyButtons.StripForStreaming(reply.Text);
+        runs.ForEach(r => r.Deliver(spoken));
     }
 
     private async Task<string> AppendTranscriptAsync(string text, string audioPath, CancellationToken ct)
