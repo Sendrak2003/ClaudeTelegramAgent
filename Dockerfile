@@ -22,18 +22,42 @@ RUN dotnet publish ClaudeTelegramAgent.RemindersMcpServer/ClaudeTelegramAgent.Re
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git curl gnupg ca-certificates \
+    && apt-get install -y --no-install-recommends git curl gnupg ca-certificates ffmpeg \
     && mkdir -p /etc/apt/keyrings \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && npm install -g @anthropic-ai/claude-code @playwright/mcp \
-    && npx --yes playwright install --with-deps chromium \
+    && node "$(npm root -g)/@playwright/mcp/node_modules/playwright-core/cli.js" install --with-deps chromium \
     && apt-get purge -y gnupg \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
+# Инструменты для файлов, которые присылает пользователь (docx, xlsx, pptx, pdf): читать, править, пересохранять.
+# Отдельный слой, чтобы не пересобирать тяжёлый слой с Chromium выше.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 python3-pip pandoc unzip zip poppler-utils \
+    && pip3 install --no-cache-dir --break-system-packages python-docx openpyxl python-pptx pypdf \
+    && rm -rf /var/lib/apt/lists/*
+
+# Настоящий Google Chrome (его ищет Playwright MCP): в нём один раз входят в аккаунты руками,
+# профиль хранится в томе /root. Отдельный слой, чтобы не пересобирать остальное.
+RUN apt-get update \
+    && curl -fsSL -o /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
+    && apt-get install -y --no-install-recommends /tmp/chrome.deb fonts-liberation fonts-noto-color-emoji \
+    && rm -f /tmp/chrome.deb \
+    && rm -rf /var/lib/apt/lists/*
+
+# KasmVNC: X-сервер с веб-клиентом (экран Chrome в браузере), нормальные клавиатура (в том числе русская) и буфер обмена.
+RUN apt-get update \
+    && curl -fsSL -o /tmp/kasm.deb https://github.com/kasmtech/KasmVNC/releases/download/v1.5.2/kasmvncserver_ubuntu_noble_1.5.2_amd64.deb \
+    && apt-get install -y --no-install-recommends /tmp/kasm.deb \
+    && rm -f /tmp/kasm.deb \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=build /app/host /app/host
 COPY --from=build /app/reminders /app/reminders
+COPY docker-entrypoint.sh /app/host/docker-entrypoint.sh
+RUN chmod +x /app/host/docker-entrypoint.sh
 
 WORKDIR /app/host
-ENTRYPOINT ["./ClaudeTelegramAgent"]
+ENTRYPOINT ["./docker-entrypoint.sh"]

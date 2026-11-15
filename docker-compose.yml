@@ -13,7 +13,94 @@ services:
       - claude-home:/root
     ports:
       - "8080:8080"
+      # KasmVNC: экран Chrome агента (открывать http://localhost:6080/). Только localhost сервера, снаружи недоступен.
+      - "127.0.0.1:6080:6080"
+    # Chrome падает на маленьком /dev/shm.
+    shm_size: "1gb"
+    restart: unless-stopped
+    environment:
+      # Голосовые ответы. Выключить: Voice__Enabled=false.
+      # Vivian (медленнее, живее): http://vivian:8099, Speaker vivian, без фильтра.
+      # Piper (быстрый, дообучен на Vivian): http://piper:8099, Speaker irina-vivian и Voice__AudioFilter ниже.
+      # Speaker входит в ключ кэша озвучки, поэтому при смене сервера меняй и его.
+      Voice__Enabled: "true"
+      # Vivian на 12 группах (vivian-fast). Piper убран: его модели и обучение сохранены в C:\Users\Administrator\voice-backup (piper-models, irina_vivian_epoch4500.ckpt, data2).
+      # Сейчас бот на Piper (лучший чекпоинт irina_vivian_e4500) с ударениями RUAccent. Вернуться на Vivian: http://vivian-fast:8099, Speaker vivian, ChunkTarget 100 / ChunkMax 160, BatchFromChunks 3.
+      Voice__BaseUrl: "http://piper:8099"
+      Voice__Speaker: "irina-e4500-c"
+      # Piper быстрый: длинные куски дают цельную интонацию (короткие звучали рублено).
+      Voice__ChunkTarget: "260"
+      Voice__ChunkMax: "380"
+      # Адрес живого плеера (Telegram Mini App). Сейчас это быстрый туннель контейнера live-tunnel: адрес меняется при его пересоздании.
+      Live__PublicUrl: "https://willing-underground-popular-bean.trycloudflare.com"
+      # Ответ из 3+ кусков: первый сразу один, остальные уходят на vivian разом, сервер считает их вместе (VIVIAN_BATCH_SIZE); короче — по одному.
+      Voice__BatchFromChunks: "0"
+      Voice__BatchParallelism: "4"
+      # Живой плеер: 1 — каждый кусок потоком по одному (пачки у Vivian давали большие паузы: звук приходит в конце расчёта).
+      Live__BatchMax: "1"
+      # Для Piper (подобрано на слух): срез первых 70 мс и плавный вход убирают рябь в начале куска, шумоподавление,
+      # меньше гулкости («бункера») в низких серединах, чуть яркости, ровная громкость между кусками.
+      # Для обычного (необученного) Piper: мягкий срез верха и приглушённый резонанс, убирает «металл».
+      # Voice__AudioFilter: "lowpass=f=8500,equalizer=f=2800:t=q:w=3:g=-2,acompressor=threshold=-20dB:ratio=2"
+      # Для дообученного на Vivian Piper (irina_vivian), подобрано на слух:
+      # Для чекпоинта 4500 фильтр выключен: чистый звук модели на слух лучше (прежний фильтр ниже, если понадобится вернуть).
+      # Voice__AudioFilter: "atrim=start=0.07,afade=t=in:d=0.06,highpass=f=100,afftdn=nr=20:nf=-42,equalizer=f=250:t=q:w=1.2:g=-3,equalizer=f=3300:t=q:w=1.5:g=2,acompressor=threshold=-20dB:ratio=2.5,loudnorm=I=-18:TP=-2"
+    depends_on:
+      - piper
+
+  # Piper (дообучен на Vivian, чекпоинт 4500) + RUAccent: ставит ударения, espeak со знаком ударения. Модели лежат в резервной папке.
+  # Piper и Vivian на этом сервере вместе не держим (общий процессор): когда включён Vivian, Piper остановлен (docker compose stop piper).
+  piper:
+    build:
+      context: ./deploy/piper
+    environment:
+      PIPER_VOICE: "irina_vivian_e4500"
+      # Если модели нет в deploy/piper/models (клон без git lfs pull), Piper докачает её с GitHub из этой ветки.
+      PIPER_MODEL_REF: "main"
+      PIPER_ACCENT: "1"
+      PIPER_NOISE_SCALE: "0.55"
+      PIPER_NOISE_W_SCALE: "0.7"
+      PIPER_LENGTH_SCALE: "1.1"
+      PIPER_MIN_PIECE_CHARS: "1000"
+      PIPER_PAUSE_SENTENCE: "0.5"
+      PIPER_PAUSE_EXCLAMATION: "0.5"
+    volumes:
+      - ./deploy/piper/models:/models
+    cpus: 4
+    restart: unless-stopped
+
+  # Сервер озвучки (qwen3-tts.cpp). Порты наружу не публикуются: к нему ходит только агент по внутренней сети.
+  vivian:
+    build:
+      context: ./deploy/vivian
+    environment:
+      # Сколько запросов сервер считает вместе. На Xeon E5-2640 v3 четыре куска разом: RTF 1,02 вместо 1,4 по очереди,
+      # но в режиме группировки (>=2) сервер не разбирает теги [pause:400ms], [joy] и читает их вслух. Теги важнее (Voice__BatchFromChunks всё равно 0).
+      VIVIAN_BATCH_SIZE: "1"
+      # Декодер звука одним GEMM для обратных свёрток: на 13% быстрее, звук тот же (разница в 16 отсчётах из 172 800 на 1 единицу).
+      QWEN_SD_CONVT_STACK: "1"
+    volumes:
+      - vivian-models:/models
+    # Не отбираем у агента весь процессор: Xeon E5-2640 v3, 16 потоков.
+    # Привязка к 8 физическим ядрам (по одному потоку каждого): квота cpus при пакетном режиме душит процесс.
+    cpuset: "0,2,4,6,8,10,12,14"
+    restart: unless-stopped
+
+  # Vivian с урезанным числом кодовых групп (патч предсказателя кодов, deploy/vivian-fast). Та же модель из тома vivian-models.
+  # QWEN_CB_GROUPS: 16 — как оригинал; 12 — быстрее кадр, но без дообучения речь на ~20% длиннее; 8 — заметно хуже на слух.
+  vivian-fast:
+    build:
+      context: ./deploy/vivian-fast
+    environment:
+      # Четыре куска ответа считаются вместе (веса читаются из памяти один раз): RTF ~1,05 вместо ~1,26. Теги в тексте в этом режиме читаются вслух, агенту их ставить запрещено.
+      VIVIAN_BATCH_SIZE: "4"
+      QWEN_SD_CONVT_STACK: "1"
+      QWEN_CB_GROUPS: "12"
+    volumes:
+      - vivian-models:/models
+    cpuset: "0,2,4,6,8,10,12,14"
     restart: unless-stopped
 
 volumes:
   claude-home:
+  vivian-models:

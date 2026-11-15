@@ -27,3 +27,6 @@ workspace/.claude/*
 ## OS
 Thumbs.db
 .DS_Store
+
+## Voice training workspace (models, datasets, samples, experiments): kept locally, not versioned
+voice-train/
