@@ -38,10 +38,10 @@ MODELS = os.environ.get("PIPER_MODELS", "/models")
 PORT = int(os.environ.get("PIPER_PORT", "8099"))
 BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
 # Откуда докачать свою модель, если её нет или вместо неё заглушка LFS (репозиторий публичный). Пусто — не качать.
-CUSTOM_BASE = os.environ.get(
-    "PIPER_CUSTOM_MODEL_BASE",
-    "https://media.githubusercontent.com/media/Sendrak2003/ClaudeTelegramAgent/main/deploy/piper/models",
-).rstrip("/")
+# PIPER_MODEL_REF — ветка или тег репозитория. .onnx лежит в Git LFS (отдаёт media.githubusercontent.com), .json — обычным файлом (raw).
+MODEL_REF = os.environ.get("PIPER_MODEL_REF", "main")
+CUSTOM_REPO = os.environ.get("PIPER_CUSTOM_MODEL_REPO", "Sendrak2003/ClaudeTelegramAgent")
+CUSTOM_ON = bool(CUSTOM_REPO)
 
 
 def voice_url(name: str, suffix: str) -> str:
@@ -70,8 +70,9 @@ def ensure_voice(name: str) -> str:
             continue
         # Свои модели (дообученные на Vivian) лежат в репозитории через Git LFS: качаем их оттуда автоматически.
         # Стандартные голоса Piper идут с Hugging Face.
-        if CUSTOM_BASE and name.startswith("irina_vivian"):
-            url = f"{CUSTOM_BASE}/{name}{suffix}"
+        if CUSTOM_ON and name.startswith("irina_vivian"):
+            host = "media" if suffix == ".onnx" else "raw"
+            url = f"https://{host}.githubusercontent.com/{'media/' if suffix == '.onnx' else ''}{CUSTOM_REPO}/{MODEL_REF}/deploy/piper/models/{name}{suffix}"
         else:
             url = voice_url(name, suffix)
         print(f"downloading {url}", flush=True)

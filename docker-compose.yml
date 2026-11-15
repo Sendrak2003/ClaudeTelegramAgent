@@ -55,6 +55,8 @@ services:
       context: ./deploy/piper
     environment:
       PIPER_VOICE: "irina_vivian_e4500"
+      # Если модели нет в deploy/piper/models (клон без git lfs pull), Piper докачает её с GitHub из этой ветки. После слияния в main поменяй на main.
+      PIPER_MODEL_REF: "feature/streaming-status"
       PIPER_ACCENT: "1"
       PIPER_NOISE_SCALE: "0.55"
       PIPER_NOISE_W_SCALE: "0.7"
