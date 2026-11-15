@@ -6,8 +6,11 @@ Set-Location $PSScriptRoot
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
     throw 'Docker не найден. Установите Docker Desktop: https://www.docker.com/products/docker-desktop/'
 }
+$ErrorActionPreference = 'Continue'
 docker info *> $null
-if ($LASTEXITCODE -ne 0) { throw 'Docker установлен, но не запущен. Запустите Docker Desktop и повторите.' }
+$dockerExit = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+if ($dockerExit -ne 0) { throw 'Docker установлен, но не запущен. Запустите Docker Desktop и повторите.' }
 
 if ((Test-Path '.env') -and (Test-Path 'workspace\.mcp.json')) {
     Write-Host 'Настройки уже есть (.env), пропускаю ввод токена. Чтобы ввести заново, удалите .env.'
@@ -16,13 +19,17 @@ if ((Test-Path '.env') -and (Test-Path 'workspace\.mcp.json')) {
 }
 
 Write-Host 'Собираю и запускаю бота (первый раз это несколько минут)...'
+# Docker пишет прогресс в stderr; PowerShell 5.1 при Stop считал бы это ошибкой, поэтому на время вызова смягчаем.
+$ErrorActionPreference = 'Continue'
 docker compose up -d --build agent
-if ($LASTEXITCODE -ne 0) { throw 'docker compose не смог запустить бота, см. сообщения выше.' }
+$exit = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+if ($exit -ne 0) { throw 'docker compose не смог запустить бота, см. сообщения выше.' }
 
 $ok = $false
 for ($i = 0; $i -lt 30; $i++) {
     Start-Sleep -Seconds 2
-    if ((docker compose logs agent --tail 50 | Out-String) -match 'Connected to Telegram as @(\S+)') {
+    if ((docker compose logs agent --tail 50 2>$null | Out-String) -match 'Connected to Telegram as @(\S+)') {
         $ok = $true
         $name = $Matches[1]
         break
