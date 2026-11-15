@@ -8,6 +8,7 @@ using Telegram.Bot;
 using Telegram.Bot.Exceptions;
 using Telegram.Bot.Types.Enums;
 using BotCommand = Telegram.Bot.Types.BotCommand;
+using CallbackQuery = Telegram.Bot.Types.CallbackQuery;
 using FileBase = Telegram.Bot.Types.FileBase;
 using InlineKeyboardButton = Telegram.Bot.Types.ReplyMarkups.InlineKeyboardButton;
 using InlineKeyboardMarkup = Telegram.Bot.Types.ReplyMarkups.InlineKeyboardMarkup;
@@ -33,6 +34,7 @@ public sealed class TelegramGateway : IMessageSender, IIncomingMessageListener, 
     private readonly ILogger<TelegramGateway> _logger;
     private readonly string _incomingFilesDirectory;
     private Func<IncomingMessage, CancellationToken, Task>? _handler;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<long, string[]> _buttonLabels = new();
 
     public TelegramGateway(TelegramOptions options, ILogger<TelegramGateway> logger)
     {
@@ -114,6 +116,14 @@ public sealed class TelegramGateway : IMessageSender, IIncomingMessageListener, 
             await _handler(incoming, ct);
         };
 
+        _bot.OnUpdate += async update =>
+        {
+            if (update.CallbackQuery is { } query)
+            {
+                await HandleCallbackAsync(query, ct);
+            }
+        };
+
         _bot.OnError += (exception, source) =>
         {
             _logger.LogError(exception, "Telegram polling error from {Source}", source);
@@ -121,8 +131,61 @@ public sealed class TelegramGateway : IMessageSender, IIncomingMessageListener, 
         };
     }
 
+    private static readonly Regex TableRegex = new(@"^[ \t]*\|.+\|[ \t]*\r?\n[ \t]*\|?[ \t]*:?-{3,}:?[ \t]*(\|[ \t]*:?-{3,}:?[ \t]*)*\|?[ \t]*(\r?\n|$)", RegexOptions.Multiline | RegexOptions.Compiled);
+    private const int MaxRichLength = 30000;
+
+    /// <summary>
+    /// Обычный sendMessage таблицы не рисует, их умеют только Rich Messages (Bot API 10.1+): весь ответ уходит как Rich Markdown.
+    /// Возвращает false, если таблицы нет или Telegram отклонил запрос, тогда текст отправляется обычным способом.
+    /// </summary>
+    private async Task<bool> TrySendRichAsync(ChatId chatId, string text, IReadOnlyList<string>? buttons, CancellationToken ct)
+    {
+        if (text.Length > MaxRichLength || !TableRegex.IsMatch(text))
+        {
+            return false;
+        }
+
+        try
+        {
+            var fields = new Dictionary<string, string>
+            {
+                ["chat_id"] = chatId.Value.ToString(),
+                ["rich_message"] = System.Text.Json.JsonSerializer.Serialize(new { markdown = text }),
+            };
+
+            if (buttons is { Count: > 0 })
+            {
+                fields["reply_markup"] = System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    inline_keyboard = buttons.Select((label, i) => new[] { new { text = label, callback_data = $"opt:{i}" } }),
+                });
+            }
+
+            using var content = new FormUrlEncodedContent(fields);
+            using var response = await _http.PostAsync($"https://api.telegram.org/bot{_token}/sendRichMessage", content, ct);
+            if (response.IsSuccessStatusCode)
+            {
+                return true;
+            }
+
+            var body = await response.Content.ReadAsStringAsync(ct);
+            _logger.LogWarning("sendRichMessage rejected for chat {ChatId}: {Status} {Body}", chatId, (int)response.StatusCode, body);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning("sendRichMessage failed for chat {ChatId}: {ErrorType}", chatId, ex.GetType().Name);
+        }
+
+        return false;
+    }
+
     public async Task SendAsync(ChatId chatId, string text, CancellationToken ct)
     {
+        if (await TrySendRichAsync(chatId, text, null, ct))
+        {
+            return;
+        }
+
         foreach (var chunk in SplitIntoChunks(text, MaxMessageLength))
         {
             try
@@ -136,6 +199,71 @@ public sealed class TelegramGateway : IMessageSender, IIncomingMessageListener, 
                 await _bot.SendMessage(chatId.Value, chunk, cancellationToken: ct);
             }
         }
+    }
+
+    public async Task SendWithButtonsAsync(ChatId chatId, string text, IReadOnlyList<string> buttons, CancellationToken ct)
+    {
+        _buttonLabels[chatId.Value] = buttons.ToArray();
+
+        if (await TrySendRichAsync(chatId, text, buttons, ct))
+        {
+            return;
+        }
+
+        var chunks = SplitIntoChunks(text, MaxMessageLength).ToList();
+        for (var i = 0; i < chunks.Count - 1; i++)
+        {
+            await SendAsync(chatId, chunks[i], ct);
+        }
+
+        var keyboard = new InlineKeyboardMarkup(buttons.Select((label, index) =>
+            new[] { InlineKeyboardButton.WithCallbackData(label, $"opt:{index}") }));
+        var last = chunks[^1];
+
+        try
+        {
+            await _bot.SendMessage(chatId.Value, ConvertMarkdownToTelegramHtml(last), parseMode: ParseMode.Html, replyMarkup: keyboard, cancellationToken: ct);
+        }
+        catch (ApiRequestException ex) when (ex.Message.Contains("can't parse entities", StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogWarning(ex, "HTML parse failed for chat {ChatId}, falling back to plain text", chatId);
+            await _bot.SendMessage(chatId.Value, last, replyMarkup: keyboard, cancellationToken: ct);
+        }
+    }
+
+    /// <summary>Нажатие кнопки: убираем клавиатуру и передаём подпись агенту как обычное сообщение пользователя.</summary>
+    private async Task HandleCallbackAsync(CallbackQuery query, CancellationToken ct)
+    {
+        var chatId = query.Message?.Chat.Id;
+        string? label = null;
+        if (chatId is { } id
+            && query.Data is { } data && data.StartsWith("opt:", StringComparison.Ordinal)
+            && int.TryParse(data.AsSpan(4), out var index)
+            && _buttonLabels.TryGetValue(id, out var labels)
+            && index >= 0 && index < labels.Length)
+        {
+            label = labels[index];
+        }
+
+        try
+        {
+            await _bot.AnswerCallbackQuery(query.Id, label is null ? "Кнопка устарела, напишите текстом." : null, cancellationToken: ct);
+            if (label is not null && query.Message is { } message)
+            {
+                await _bot.EditMessageReplyMarkup(message.Chat.Id, message.Id, replyMarkup: null, cancellationToken: ct);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to acknowledge button press in chat {ChatId}", chatId);
+        }
+
+        if (label is null || _handler is null || chatId is null)
+        {
+            return;
+        }
+
+        await _handler(new IncomingMessage(new ChatId(chatId.Value), query.From.Id, query.From.Username, label, null), ct);
     }
 
     public async Task StreamDraftAsync(ChatId chatId, int draftId, string text, CancellationToken ct, string? iconEmojiId = null)

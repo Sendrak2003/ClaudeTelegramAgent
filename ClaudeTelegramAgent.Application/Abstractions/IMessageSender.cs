@@ -6,6 +6,9 @@ public interface IMessageSender
 {
     Task SendAsync(ChatId chatId, string text, CancellationToken ct);
 
+    /// <summary>Отправляет текст; под последним сообщением показывает кнопки (по одной в ряд). Нажатие приходит как обычное входящее сообщение с подписью кнопки.</summary>
+    Task SendWithButtonsAsync(ChatId chatId, string text, IReadOnlyList<string> buttons, CancellationToken ct);
+
     Task SendTypingAsync(ChatId chatId, CancellationToken ct);
 
     /// <summary>Отправляет голосовое сообщение (OGG/Opus).</summary>
