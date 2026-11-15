@@ -17,7 +17,6 @@ public static class LiveEndpoints
     {
         var live = app.MapGroup("/live");
 
-        // Длинный запрос вместо SSE: бесплатные туннели и многие прокси не пропускают потоковый ответ, а такой работает везде.
         live.MapGet("/poll", async (HttpContext http, LiveVoiceHub hub, LiveVoiceService service, ILogger<LiveVoiceHub> logger, long? after, string? epoch) =>
         {
             if (Authorize(http.Request, botToken, allowedUserIds, devKey) is not { } userId)

@@ -7,10 +7,6 @@ using ClaudeTelegramAgent.Domain;
 
 namespace ClaudeTelegramAgent.Infrastructure.Claude;
 
-// Запуск идёт в режиме `--output-format stream-json --verbose --include-partial-messages`: на каждой
-// строке stdout один JSON-объект. Из них ловим события для живого статуса (текст, инструменты),
-// а итоговая строка `"type":"result"` по формату совпадает с обычным `--output-format json`
-// и разбирается в ParseReply.
 public sealed class ClaudeCliAgentClient(ClaudeCliOptions options) : IClaudeAgentClient
 {
     public async Task<ClaudeAgentReply> SendAsync(
@@ -26,8 +22,6 @@ public sealed class ClaudeCliAgentClient(ClaudeCliOptions options) : IClaudeAgen
             WorkingDirectory = options.WorkDir,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
-            // claude CLI пишет UTF-8 в stdout/stderr независимо от системной кодовой страницы —
-            // без этого на Windows кириллица превращается в кракозябры (читается в codepage по умолчанию).
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8,
             UseShellExecute = false,
@@ -47,8 +41,6 @@ public sealed class ClaudeCliAgentClient(ClaudeCliOptions options) : IClaudeAgen
             startInfo.ArgumentList.Add(options.Model);
         }
 
-        // Лимит агентных ходов (каждый вызов инструмента — ход) в одном запуске claude;
-        // защищает от затяжных циклов, которые быстро съедают лимиты подписки.
         if (options.MaxTurns is > 0)
         {
             startInfo.ArgumentList.Add("--max-turns");
@@ -101,7 +93,6 @@ public sealed class ClaudeCliAgentClient(ClaudeCliOptions options) : IClaudeAgen
             }
             else if (!e.Data.StartsWith('{'))
             {
-                // Не JSON-событие (например, сообщение об ошибке запуска) — пригодится для текста ошибки.
                 stdout.AppendLine(e.Data);
             }
         };
@@ -138,7 +129,6 @@ public sealed class ClaudeCliAgentClient(ClaudeCliOptions options) : IClaudeAgen
         return ParseReply(stdoutText, stderrText, process.ExitCode, sessionId, options.MaxTurns);
     }
 
-    // Возвращает true, если строка — итоговый результат запуска (type=result).
     private static bool HandleStreamLine(string line, Action<AgentProgress>? onProgress)
     {
         if (!line.StartsWith('{'))
@@ -161,7 +151,6 @@ public sealed class ClaudeCliAgentClient(ClaudeCliOptions options) : IClaudeAgen
                 return true;
             }
 
-            // События субагентов (parent_tool_use_id != null) не показываем: они не часть ответа.
             if (onProgress is null
                 || (root.TryGetProperty("parent_tool_use_id", out var parent) && parent.ValueKind == JsonValueKind.String))
             {
@@ -181,7 +170,6 @@ public sealed class ClaudeCliAgentClient(ClaudeCliOptions options) : IClaudeAgen
         }
         catch (JsonException)
         {
-            // Битая строка потока не должна ронять запуск — итог всё равно придёт в result.
         }
 
         return false;
@@ -215,7 +203,6 @@ public sealed class ClaudeCliAgentClient(ClaudeCliOptions options) : IClaudeAgen
         }
     }
 
-    // true, если сообщение несёт результат инструмента; isError — хотя бы один из результатов завершился ошибкой.
     private static bool TryGetToolResult(JsonElement root, out bool isError)
     {
         isError = false;
@@ -275,8 +262,6 @@ public sealed class ClaudeCliAgentClient(ClaudeCliOptions options) : IClaudeAgen
                 return new ClaudeAgentReply(text, newSessionId, Success: exitCode == 0);
             }
 
-            // Ошибочные итоги (например, исчерпан лимит ходов) приходят JSON-ом без текста ответа:
-            // без этого пользователю улетел бы сырой JSON.
             var errorReply = DescribeErrorResult(root, newSessionId, maxTurns);
             if (errorReply is not null)
             {
@@ -285,7 +270,6 @@ public sealed class ClaudeCliAgentClient(ClaudeCliOptions options) : IClaudeAgen
         }
         catch (JsonException)
         {
-            // Вывод не JSON — возвращаем сырой текст как есть.
             return new ClaudeAgentReply(stdoutText.Trim(), previousSessionId, Success: exitCode == 0);
         }
 
@@ -308,7 +292,6 @@ public sealed class ClaudeCliAgentClient(ClaudeCliOptions options) : IClaudeAgen
             return null;
         }
 
-        // Сессия остаётся валидной: можно написать «продолжай» и агент подхватит с того же места.
         if (subtype == "error_max_turns")
         {
             var limit = maxTurns is > 0 ? $" ({maxTurns})" : string.Empty;
@@ -342,11 +325,6 @@ public sealed class ClaudeCliAgentClient(ClaudeCliOptions options) : IClaudeAgen
 
             if (root.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.Array)
             {
-                // Content-массив может содержать несколько text-блоков вперемешку с tool_use —
-                // это шаги одного агентного хода (модель рассуждала вслух между вызовами
-                // инструментов), а не части одного ответа. Склеивать их все подряд без
-                // разделителя нельзя: получается слипшийся повторяющийся текст. Берём только
-                // последний text-блок — он самый свежий и самодостаточный.
                 string? lastText = null;
                 foreach (var block in content.EnumerateArray())
                 {
@@ -409,7 +387,6 @@ public sealed class ClaudeCliAgentClient(ClaudeCliOptions options) : IClaudeAgen
         }
         catch
         {
-            // Процесс уже мог завершиться — игнорируем.
         }
     }
 }

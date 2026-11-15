@@ -33,9 +33,6 @@ public sealed class SqliteReminderRepository : IReminderRepository
             new
             {
                 ChatId = reminder.ChatId.ToString(),
-                // Храним и сравниваем строго в UTC ("O" на DateTimeOffset сохраняет исходный
-                // офсет, а SQLite сравнивает remind_at как обычный текст — строки с разными
-                // офсетами не сортируются как реальное время. UtcDateTime убирает эту ловушку.
                 RemindAt = reminder.RemindAtUtc.UtcDateTime.ToString("O"),
                 reminder.Message,
                 CreatedAt = reminder.CreatedAtUtc.UtcDateTime.ToString("O"),
@@ -144,7 +141,6 @@ public sealed class SqliteReminderRepository : IReminderRepository
         return connection;
     }
 
-    // POCO с обычными set-свойствами — под материализацию через Dapper.
     private sealed class ReminderRow
     {
         public long Id { get; set; }

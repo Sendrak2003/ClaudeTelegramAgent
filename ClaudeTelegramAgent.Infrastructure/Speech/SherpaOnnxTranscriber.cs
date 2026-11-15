@@ -13,10 +13,8 @@ public sealed class SherpaOnnxTranscriber(SpeechOptions options) : ISpeechTransc
 {
     private const int SampleRate = 16000;
 
-    // Whisper принимает окно до 30 секунд; берём с запасом.
     private const int MaxWindowSamples = 28 * SampleRate;
 
-    // Модель весит около гигабайта в памяти и грузится ~2 секунды, поэтому держим одну на весь процесс.
     private readonly SemaphoreSlim _gate = new(1, 1);
     private OfflineRecognizer? _recognizer;
 
@@ -34,8 +32,6 @@ public sealed class SherpaOnnxTranscriber(SpeechOptions options) : ISpeechTransc
         {
             var samples = await DecodeAsync(audioPath, timeoutCts.Token);
 
-            // Распознавание считается на процессоре и синхронное — уводим из async-потока
-            // и пускаем по одному, чтобы параллельные голосовые не делили ядра и память.
             await _gate.WaitAsync(timeoutCts.Token);
             try
             {
@@ -138,8 +134,6 @@ public sealed class SherpaOnnxTranscriber(SpeechOptions options) : ISpeechTransc
         return string.Join(" ", parts);
     }
 
-    // VAD находит куски речи, но на коротких обрывках по 2 секунды Whisper теряет контекст и
-    // путает слова. Поэтому соседние куски склеиваем в окна до 28 секунд, сохраняя исходные паузы.
     private List<(int Start, int End)> FindSpeechWindows(float[] samples, CancellationToken ct)
     {
         if (!File.Exists(options.VadModelPath))
@@ -234,7 +228,6 @@ public sealed class SherpaOnnxTranscriber(SpeechOptions options) : ISpeechTransc
         }
         catch
         {
-            // Процесс уже мог завершиться — игнорируем.
         }
     }
 

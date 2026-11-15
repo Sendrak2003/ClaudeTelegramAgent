@@ -142,7 +142,6 @@ public sealed class JsonFileSessionStore : ISessionStore, IAddonSettings
         }
         catch (JsonException)
         {
-            // Старый формат файла (одна сессия на чат, без слотов) — начинаем с чистого листа.
             return new Dictionary<string, ChatState>();
         }
     }

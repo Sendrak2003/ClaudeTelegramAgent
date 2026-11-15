@@ -55,7 +55,6 @@ public sealed class MessagingToolsAdapter
     {
         try
         {
-            // Try to get bot token (we created TelegramBotClient when registering services)
             var telegramClient = bot as TelegramBotClient;
             var token = telegramClient?.Token;
             if (string.IsNullOrEmpty(token))
@@ -63,7 +62,6 @@ public sealed class MessagingToolsAdapter
                 return "Cannot access bot token to download file.";
             }
 
-            // Call Telegram HTTP API directly to get file path (avoids relying on specific client library methods)
             var httpClient = new HttpClient();
             var getFileUrl = $"https://api.telegram.org/bot{token}/getFile?file_id={Uri.EscapeDataString(fileId)}";
             using var getResp = await httpClient.GetAsync(getFileUrl, ct);
@@ -81,7 +79,6 @@ public sealed class MessagingToolsAdapter
                 return $"Telegram returned empty file_path: {getJson}";
             }
 
-            // Prepare save directory
             saveDirectory ??= Directory.GetCurrentDirectory();
             if (!Directory.Exists(saveDirectory))
             {
@@ -91,7 +88,6 @@ public sealed class MessagingToolsAdapter
             string fileName = $"voice_{fileId}_{DateTime.Now:yyyyMMdd_HHmmss}.ogg";
             string fullPath = Path.Combine(saveDirectory, fileName);
 
-            // Download the file content
             var downloadUrl = $"https://api.telegram.org/file/bot{token}/{filePath}";
             using var downloadResp = await httpClient.GetAsync(downloadUrl, ct);
             downloadResp.EnsureSuccessStatusCode();
@@ -130,7 +126,6 @@ public sealed class MessagingToolsAdapter
             CreateNoWindow = true
         };
 
-        // ArgumentList вместо строки Arguments: пути с кавычками и пробелами не ломают команду.
         foreach (var arg in new[] { "-y", "-i", inputPath, "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", outputPath })
         {
             psi.ArgumentList.Add(arg);
@@ -142,7 +137,6 @@ public sealed class MessagingToolsAdapter
             if (process == null)
                 return "Не удалось запустить ffmpeg. Убедитесь, что он установлен и добавлен в PATH.";
 
-            // stderr читаем параллельно с ожиданием: если ffmpeg заполнит буфер, он зависнет.
             var errorTask = process.StandardError.ReadToEndAsync(ct);
             _ = process.StandardOutput.ReadToEndAsync(ct);
             await process.WaitForExitAsync(ct);
@@ -170,7 +164,6 @@ public sealed class MessagingToolsAdapter
         [Description("Язык речи (ru, en, ...) или auto для автоопределения")] string language = "ru",
         CancellationToken ct = default)
     {
-        // Модели лежат в .agent-data/models рядом с базой напоминаний (папка вне git).
         var dataDir = Path.GetDirectoryName(Environment.GetEnvironmentVariable("REMINDERS_DB") ?? "");
         if (string.IsNullOrEmpty(dataDir))
             return "Не удалось определить папку данных (нет REMINDERS_DB).";

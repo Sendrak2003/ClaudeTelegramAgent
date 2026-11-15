@@ -8,15 +8,11 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Telegram.Bot;
 
-// На Windows консольный stdin/stdout по умолчанию открывается в системной кодовой
-// странице, а не UTF-8 — JSON-RPC поверх stdio (MCP-протокол) от claude CLI приходит
-// в UTF-8, поэтому без этого кириллица в аргументах инструментов превращается в "?".
 Console.InputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
 Console.OutputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
 
 var builder = Host.CreateApplicationBuilder(args);
 
-// stdout зарезервирован под MCP-протокол — весь лог должен идти в stderr.
 builder.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);
 
 var dbPath = Environment.GetEnvironmentVariable("REMINDERS_DB")
