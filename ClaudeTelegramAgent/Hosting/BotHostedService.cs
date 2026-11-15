@@ -17,6 +17,64 @@ public sealed class BotHostedService(
     IWebAppLauncher webApp,
     ILogger<BotHostedService> logger) : BackgroundService
 {
+    private const string HelpText =
+        "Привет! Я ИИ-ассистент: отвечаю на вопросы, работаю с файлами и страницами, ставлю напоминания и могу озвучивать ответы.\n\n" +
+        "*Что умею*\n" +
+        "— писать и править тексты, объяснять, считать, сравнивать (в том числе таблицами)\n" +
+        "— искать в интернете и читать страницы\n" +
+        "— принимать голосовые, фото и файлы\n" +
+        "— напоминать о делах в нужное время\n\n" +
+        "*Команды*\n" +
+        "/new — новый чат, /chats — список, /switch N — переключиться\n" +
+        "/reset — сбросить контекст, /status — состояние\n" +
+        "/voice — голосовые ответы, /live — живая озвучка в плеере\n\n" +
+        "Просто напишите, что нужно, или выберите пример ниже.";
+
+    private static readonly string[] HelpButtons = ["Что ты умеешь на примерах", "Поставь напоминание", "Сравни два варианта таблицей"];
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<long, DateTimeOffset> _deniedAt = new();
+
+    /// <summary>Чужому пользователю отвечаем один раз в час: что доступ закрыт и какой у него id, чтобы владелец мог его добавить.</summary>
+    private async Task ReplyAccessClosedAsync(IncomingMessage message, CancellationToken ct)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (_deniedAt.TryGetValue(message.UserId, out var last) && now - last < TimeSpan.FromHours(1))
+        {
+            return;
+        }
+
+        _deniedAt[message.UserId] = now;
+        try
+        {
+            await messageSender.SendAsync(
+                message.ChatId,
+                $"Привет! Это приватный ИИ-ассистент, доступ пока закрыт.\nЧтобы получить доступ, отправьте владельцу ваш id: `{message.UserId}`",
+                ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Failed to send access-closed reply to {UserId}", message.UserId);
+        }
+
+        // Владельцам (в личке id чата равен id пользователя) сообщаем, кто стучится, чтобы добавить его в Agent__AllowedUserIds.
+        var who = message.Username is { Length: > 0 } name ? $"@{name}" : "без username";
+        var preview = message.Text.Length > 100 ? message.Text[..100] + "…" : message.Text;
+        foreach (var ownerId in access.AllowedUserIds)
+        {
+            try
+            {
+                await messageSender.SendAsync(
+                    new ChatId(ownerId),
+                    $"Новый пользователь пытается написать боту.\nid: `{message.UserId}`\nusername: {who}\nСообщение: {preview}\n\nЧтобы дать доступ, добавьте id в Agent__AllowedUserIds в .env и перезапустите бота.",
+                    ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogWarning(ex, "Failed to notify owner {OwnerId} about {UserId}", ownerId, message.UserId);
+            }
+        }
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         listener.OnMessageReceived(HandleMessageAsync);
@@ -28,6 +86,7 @@ public sealed class BotHostedService(
         if (!access.AllowedUserIds.Contains(message.UserId))
         {
             logger.LogWarning("Ignoring message from unauthorized user {UserId} ({Username})", message.UserId, message.Username);
+            await ReplyAccessClosedAsync(message, ct);
             return;
         }
 
@@ -54,7 +113,8 @@ public sealed class BotHostedService(
         switch (text)
         {
             case "/start":
-                await messageSender.SendAsync(message.ChatId, "Привет! Я на связи и готов помочь.", ct);
+            case "/help":
+                await messageSender.SendWithButtonsAsync(message.ChatId, HelpText, HelpButtons, ct);
                 return;
             case "/reset":
                 conversation.Reset(message.ChatId);
