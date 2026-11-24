@@ -401,9 +401,10 @@ public sealed class TelegramGateway : IMessageSender, IIncomingMessageListener, 
             return null;
         }
 
-        Directory.CreateDirectory(_incomingFilesDirectory);
+        var chatDirectory = Path.Combine(_incomingFilesDirectory, message.Chat.Id.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        Directory.CreateDirectory(chatDirectory);
         var fileName = $"{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}-{file.FileUniqueId}{extension}";
-        var path = Path.Combine(_incomingFilesDirectory, fileName);
+        var path = Path.Combine(chatDirectory, fileName);
 
         await using var stream = File.Create(path);
         await _bot.GetInfoAndDownloadFile(file.FileId, stream, ct);

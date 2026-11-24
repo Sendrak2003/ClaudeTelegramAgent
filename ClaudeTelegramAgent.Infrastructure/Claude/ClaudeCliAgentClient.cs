@@ -16,10 +16,18 @@ public sealed class ClaudeCliAgentClient(ClaudeCliOptions options) : IClaudeAgen
         CancellationToken ct,
         Action<AgentProgress>? onProgress = null)
     {
+        var isOwner = options.IsOwner(chatId.Value);
+        var workDir = options.WorkDir;
+        if (!isOwner)
+        {
+            workDir = Path.Combine(options.EffectiveGuestsDir, chatId.ToString());
+            Directory.CreateDirectory(workDir);
+        }
+
         var startInfo = new ProcessStartInfo
         {
             FileName = options.Bin,
-            WorkingDirectory = options.WorkDir,
+            WorkingDirectory = workDir,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             StandardOutputEncoding = Encoding.UTF8,
@@ -53,7 +61,11 @@ public sealed class ClaudeCliAgentClient(ClaudeCliOptions options) : IClaudeAgen
             startInfo.ArgumentList.Add(sessionId);
         }
 
-        if (string.Equals(options.PermissionMode, "bypassPermissions", StringComparison.OrdinalIgnoreCase))
+        if (!isOwner)
+        {
+            AddGuestRestrictions(startInfo, chatId);
+        }
+        else if (string.Equals(options.PermissionMode, "bypassPermissions", StringComparison.OrdinalIgnoreCase))
         {
             startInfo.ArgumentList.Add("--dangerously-skip-permissions");
         }
@@ -127,6 +139,75 @@ public sealed class ClaudeCliAgentClient(ClaudeCliOptions options) : IClaudeAgen
         var stderrText = stderr.ToString();
 
         return ParseReply(stdoutText, stderrText, process.ExitCode, sessionId, options.MaxTurns);
+    }
+
+    /// <summary>
+    /// Гость: без Bash и браузера, без MCP (в их конфиге лежит токен бота), без настроек владельца,
+    /// файловые инструменты ограничены его папкой и его подпапкой с присланными файлами; bypassPermissions недоступен.
+    /// </summary>
+    private void AddGuestRestrictions(ProcessStartInfo startInfo, ChatId chatId)
+    {
+        startInfo.ArgumentList.Add("--restricted");
+        startInfo.ArgumentList.Add("--strict-mcp-config");
+
+        if (options.GuestBrowser)
+        {
+            startInfo.ArgumentList.Add("--mcp-config");
+            startInfo.ArgumentList.Add(WriteGuestBrowserConfig(chatId));
+            startInfo.ArgumentList.Add("--allowedTools");
+            startInfo.ArgumentList.Add("mcp__browser__*");
+            startInfo.ArgumentList.Add("--disallowedTools");
+            startInfo.ArgumentList.Add("mcp__browser__browser_run_code_unsafe");
+        }
+
+        startInfo.ArgumentList.Add("--tools");
+        startInfo.ArgumentList.Add("Read,Edit,Write,Glob,Grep,WebSearch,WebFetch");
+        startInfo.ArgumentList.Add("--permission-mode");
+        startInfo.ArgumentList.Add("acceptEdits");
+
+        if (!string.IsNullOrWhiteSpace(options.IncomingDir))
+        {
+            var incoming = Path.Combine(options.IncomingDir, chatId.ToString());
+            Directory.CreateDirectory(incoming);
+            startInfo.ArgumentList.Add("--add-dir");
+            startInfo.ArgumentList.Add(incoming);
+        }
+    }
+
+    /// <summary>
+    /// Свой невидимый браузер гостя: отдельный профиль, не Chrome владельца (в нём его входы в аккаунты).
+    /// Конфиг и профиль лежат вне папки гостя, поэтому он не может их подменить. Без секретов.
+    /// Запрет адресов — лишь частичная мера (Playwright сам пишет, что это не граница безопасности и редиректы не ловит),
+    /// настоящая защита сети — в изоляции контейнера.
+    /// </summary>
+    private string WriteGuestBrowserConfig(ChatId chatId)
+    {
+        var configDir = Path.Combine(options.EffectiveGuestsDir, ".mcp-configs");
+        var profileDir = Path.Combine(options.EffectiveGuestsDir, ".browser", chatId.ToString());
+        Directory.CreateDirectory(configDir);
+        Directory.CreateDirectory(profileDir);
+
+        var config = new
+        {
+            mcpServers = new
+            {
+                browser = new
+                {
+                    command = "playwright-mcp",
+                    args = new[]
+                    {
+                        "--headless",
+                        "--no-sandbox",
+                        "--user-data-dir", profileDir,
+                        "--blocked-origins", "http://localhost;http://127.0.0.1;http://169.254.169.254;http://host.docker.internal",
+                    },
+                },
+            },
+        };
+
+        var path = Path.Combine(configDir, $"{chatId}.json");
+        File.WriteAllText(path, JsonSerializer.Serialize(config));
+        return path;
     }
 
     private static bool HandleStreamLine(string line, Action<AgentProgress>? onProgress)

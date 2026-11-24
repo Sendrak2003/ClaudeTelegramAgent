@@ -94,7 +94,11 @@ builder.Services.AddClaudeAgentClient(new ClaudeCliOptions(
     claudeAuthMode,
     claudeApiKey,
     claudeModel,
-    claudeMaxTurns));
+    claudeMaxTurns,
+    allowedUserIds,
+    configuration["Claude:GuestsDir"],
+    incomingFilesDirectory,
+    configuration.GetValue("Claude:GuestBrowser", true)));
 
 builder.Services.AddReminderPersistence(new SqliteReminderOptions(reminderDbPath));
 builder.Services.AddSessionStore(sessionsFilePath);
